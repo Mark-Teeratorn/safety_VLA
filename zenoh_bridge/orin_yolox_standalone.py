@@ -359,11 +359,12 @@ class StandaloneOrinPipeline:
         detections = []
         for box, score, cid in zip(boxes, scores, class_ids):
             label = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"class_{cid}"
-            detections.append({
-                "label": label,
-                "confidence": float(score),
-                "bbox": [float(v) for v in box]  # [x1, y1, x2, y2]
-            })
+            if label != "UNKNOWN":
+                detections.append({
+                    "label": label,
+                    "confidence": float(score),
+                    "bbox": [float(v) for v in box]  # [x1, y1, x2, y2]
+                })
 
         with self.lock:
             kinematic = self.latest_kinematic
