@@ -305,68 +305,22 @@ class VLACosmosAssistedReasoner:
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
-        # 1. Visual Trajectory Anomaly Extraction (for objects OUTSIDE YOLO vocabulary)
-        h, w = raw_frame_bgr.shape[:2]
-        
-        # Vehicle Forward Driving Corridor ROI (central lane zone)
-        roi_x1, roi_x2 = int(w * 0.20), int(w * 0.80)
-        roi_y1, roi_y2 = int(h * 0.40), int(h * 0.95)
-        corridor = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
-        
-        # Detect foreground visual anomalies / saliency blobs against road
-        gray = cv2.cvtColor(corridor, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        visual_hazards = []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area > 1000:  # Significant obstacle size in driving corridor (dog, box, debris)
-                bx, by, bw, bh = cv2.boundingRect(cnt)
-                abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
-                abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
-                
-                # Check if this visual contour overlaps with any existing YOLO hint
-                overlaps_yolo = False
-                for yh in yolo_hints:
-                    yx1, yy1, yx2, yy2 = yh["bbox"]
-                    if not (abs_x2 < yx1 or abs_x1 > yx2 or abs_y2 < yy1 or abs_y1 > yy2):
-                        overlaps_yolo = True
-                        break
-                
-                if not overlaps_yolo:
-                    norm_area = (bw * bh) / float(w * h)
-                    visual_hazards.append({
-                        "label": "VISUAL_UNLABELLED_HAZARD",
-                        "confidence": 0.88,
-                        "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
-                        "norm_area": norm_area,
-                        "is_outside_yolo": True
-                    })
-
-        # Combine YOLO hints with Visual Anomaly Hazards outside YOLO
-        combined_hints = list(yolo_hints)
-        for vh in visual_hazards:
-            combined_hints.append(vh)
-
-        vla_prompt = self.construct_vla_prompt(combined_hints)
+        vla_prompt = self.construct_vla_prompt(yolo_hints)
 
         threats = []
-        for det in combined_hints:
+        for det in yolo_hints:
             lbl = det["label"]
             conf = det["confidence"]
             x1, y1, x2, y2 = det["bbox"]
             area = max(0, x2 - x1) * max(0, y2 - y1)
             norm_area = area / (640.0 * 480.0)
 
-            # Objects outside YOLO or VRUs get high 2.2x priority multiplier
-            mult = 2.2 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD", "VISUAL_UNLABELLED_HAZARD"] else 1.0
+            # Pedestrians, Cyclists, and Long-Tail Novel Hazards get 2.0x priority multiplier
+            mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD"] else 1.0
             threats.append({
                 "label": lbl,
                 "score": norm_area * mult * conf,
-                "confidence": conf,
-                "bbox": det["bbox"]
+                "confidence": conf
             })
 
         if not threats:
@@ -376,14 +330,13 @@ class VLACosmosAssistedReasoner:
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "visual_hazards": []
+                "vla_prompt": vla_prompt
             }
 
         threats.sort(key=lambda t: t["score"], reverse=True)
         top = threats[0]
 
-        if top["score"] > 0.12:
+        if top["score"] > 0.15:
             self.risk_level = "CRITICAL"
             tag_name = top["label"]
             self.last_decision = f"EMERGENCY BRAKE: [{tag_name}] detected in trajectory!"
@@ -391,10 +344,9 @@ class VLACosmosAssistedReasoner:
                 "target_speed": 0.0,
                 "emergency_brake": True,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "visual_hazards": visual_hazards
+                "vla_prompt": vla_prompt
             }
-        elif top["score"] > 0.04:
+        elif top["score"] > 0.05:
             self.risk_level = "WARNING"
             speed = max(0.5, self.cruise_speed * 0.4)
             tag_name = top["label"]
@@ -403,8 +355,7 @@ class VLACosmosAssistedReasoner:
                 "target_speed": speed,
                 "emergency_brake": False,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "visual_hazards": visual_hazards
+                "vla_prompt": vla_prompt
             }
         else:
             self.risk_level = "SAFE"
@@ -414,8 +365,7 @@ class VLACosmosAssistedReasoner:
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "visual_hazards": visual_hazards
+                "vla_prompt": vla_prompt
             }
 
 
@@ -475,10 +425,8 @@ class VLACosmosTestSimulation:
         return frame_bgr
 
     def _overlay_vla_hud(self, img: np.ndarray, yolo_hints: list, vla_cmd: dict, inf_ms: float):
-        # 1. Draw YOLO Assistance Box Proposals (Green for vehicles, Yellow for pedestrians)
+        # Draw YOLO Assistance Box Proposals
         for det in yolo_hints:
-            if det.get("is_outside_yolo"):
-                continue
             x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
             lbl = det["label"]
             conf = det["confidence"]
@@ -487,15 +435,6 @@ class VLACosmosTestSimulation:
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             cv2.putText(img, f"YOLO Hint: {lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
-
-        # 2. Draw Objects OUTSIDE YOLO (RED Bounding Boxes for Dogs, Animals, Debris)
-        visual_hazards = vla_cmd.get("visual_hazards", [])
-        for vh in visual_hazards:
-            x1, y1, x2, y2 = [int(v) for v in vh["bbox"]]
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + 270, max(y1, 25)), (0, 0, 255), -1)
-            cv2.putText(img, "VLA HAZARD: OUTSIDE_YOLO (Dog/Debris)", (x1 + 4, max(y1 - 7, 18)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 2)
 
         # Top HUD Banner Background (Height = 70px)
         h, w = img.shape[:2]
