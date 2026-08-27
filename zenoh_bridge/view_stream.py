@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 """
-Zenoh Stream Viewer — Laptop Client
-==================================
-Subscribes to live annotated camera video stream from AGX Orin over Zenoh
-and displays it live on your laptop screen.
+Zenoh Perception Stream Viewer — Laptop Client
+==============================================
+Subscribes to real-time YOLOX perception data and kinematic state
+streamed from the AGX Orin over Zenoh (pure JSON metadata, NO images).
 
 Usage on Laptop:
     python3 view_stream.py --orin-ip 192.168.1.20
 """
 
 import argparse
+import json
 import time
-import cv2
-import numpy as np
 import zenoh
+
+KEY_PERCEPTION = "aimslab/orin/perception/objects"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Live Video Stream Viewer over Zenoh")
+    parser = argparse.ArgumentParser(description="Live Perception Data Viewer over Zenoh")
     parser.add_argument("--orin-ip", default="192.168.1.20", help="IP address of Orin Zenoh router")
     parser.add_argument("--port", default=7447, type=int, help="Zenoh router port (default 7447)")
-    parser.add_argument("--topic", default="aimslab/orin/perception/image_annotated", help="Zenoh image topic")
+    parser.add_argument("--topic", default=KEY_PERCEPTION, help="Zenoh perception topic")
     args = parser.parse_args()
 
     # Open Zenoh client connection to Orin
@@ -31,69 +32,45 @@ def main():
     print(f"[Viewer] Connecting to Orin Zenoh router at {endpoint}...")
 
     session = zenoh.open(cfg)
-    print(f"[Viewer] Connected! Subscribing to topic: {args.topic}")
+    print(f"[Viewer] Connected! Listening to real-time perception stream on: {args.topic}")
+    print("=" * 70)
 
-    last_time = time.time()
-    frame_count = 0
+    count = 0
 
-    has_gui = True
-
-    def on_image_sample(sample: zenoh.Sample):
-        nonlocal last_time, frame_count, has_gui
+    def on_sample(sample: zenoh.Sample):
+        nonlocal count
         try:
-            raw_bytes = bytes(sample.payload.to_bytes())
-            if len(raw_bytes) < 8:
-                return
+            payload = json.loads(bytes(sample.payload.to_bytes()).decode())
+            ts = payload.get("timestamp", time.time())
+            latency_ms = (time.time() - ts) * 1000
+            inf_ms = payload.get("inference_ms", 0.0)
+            detections = payload.get("detections", [])
+            kinematic = payload.get("kinematic", {})
 
-            # Header timestamp
-            timestamp = np.frombuffer(raw_bytes[:8], dtype=np.float64)[0]
-            jpeg_data = np.frombuffer(raw_bytes[8:], dtype=np.uint8)
+            count += 1
+            print(f"\r[{count:04d}] Latency: {latency_ms:4.1f}ms | GPU Inf: {inf_ms:4.1f}ms | Objects: {len(detections)}", end="")
 
-            frame_bgr = cv2.imdecode(jpeg_data, cv2.IMREAD_COLOR)
-            if frame_bgr is not None:
-                latency_ms = (time.time() - timestamp) * 1000
-                cv2.putText(frame_bgr, f"Network Latency: {latency_ms:.1f}ms",
-                            (10, frame_bgr.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                frame_count += 1
-
-                if has_gui:
-                    try:
-                        cv2.imshow("Orin Real-Time YOLOX Stream", frame_bgr)
-                    except Exception as gui_err:
-                        print(f"[Viewer] GUI window not available on laptop ({gui_err}).")
-                        print("[Viewer] Fallback: Saving live frame to 'latest_stream.jpg' continuously...")
-                        has_gui = False
-                        cv2.imwrite("latest_stream.jpg", frame_bgr)
-                else:
-                    cv2.imwrite("latest_stream.jpg", frame_bgr)
-                    if frame_count % 30 == 0:
-                        print(f"[Viewer] Stream active: Received {frame_count} frames | Latency: {latency_ms:.1f}ms | Saved to latest_stream.jpg")
+            # Print detailed breakdown every 10 frames
+            if count % 15 == 0 or len(detections) > 0:
+                det_str = ", ".join([f"{d['label']}({d['confidence']:.2f})" for d in detections]) if detections else "None"
+                pos = kinematic.get("position", {}) if kinematic else {}
+                pos_str = f"x:{pos.get('x',0):.2f}, y:{pos.get('y',0):.2f}" if pos else "N/A"
+                print(f"\n   └── Detections: [{det_str}] | Kinematic Pos: [{pos_str}]")
         except Exception as e:
-            print(f"[Viewer] Sample error: {e}")
+            print(f"\n[Viewer] Parse error: {e}")
 
-    sub = session.declare_subscriber(args.topic, on_image_sample)
-    print("[Viewer] Streaming video feed... Press Ctrl+C to stop.")
+    sub = session.declare_subscriber(args.topic, on_sample)
+    print("[Viewer] Real-time stream active. Press Ctrl+C to stop.")
 
     try:
         while True:
-            if has_gui:
-                try:
-                    if cv2.waitKey(1) == ord('q'):
-                        break
-                except Exception:
-                    pass
-            time.sleep(0.01)
+            time.sleep(1.0)
     except KeyboardInterrupt:
         pass
     finally:
-        if has_gui:
-            try:
-                cv2.destroyAllWindows()
-            except Exception:
-                pass
         sub.undeclare()
         session.close()
-        print("[Viewer] Stopped.")
+        print("\n[Viewer] Stopped.")
 
 
 if __name__ == "__main__":
