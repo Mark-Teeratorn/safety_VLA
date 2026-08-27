@@ -42,7 +42,7 @@ class RealCameraBridge:
         self.cap = None
         self.connected = False
 
-    def connect((self) -> bool:
+    def connect(self) -> bool:
         if self.camera_type == "realsense":
             if not _HAS_REALSENSE:
                 print("[RealCameraBridge] pyrealsense2 not installed. Falling back to USB camera...")
