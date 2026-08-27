@@ -49,7 +49,6 @@ except ImportError:
 KEY_KINEMATIC = "aimslab/laptop/localization/kinematic_state"
 KEY_PERCEPTION = "aimslab/orin/perception/objects"
 KEY_CONTROL = "aimslab/orin/control_cmd"
-KEY_PROMPT = "aimslab/vla/prompt"
 
 # Empirically verified Autoware yolox-sPlus model class index mapping
 CLASS_NAMES = [
@@ -280,15 +279,10 @@ class YOLOXDetector:
 class VLAReasoningEngine:
     """Vision-Language-Action (VLA) Safety Assessment & Controller."""
 
-    def __init__(self, prompt: str = "Drive safely, yield to pedestrians and vehicles.", cruise_speed: float = 3.0):
-        self.prompt = prompt
+    def __init__(self, cruise_speed: float = 3.0):
         self.cruise_speed = cruise_speed
         self.risk_level = "SAFE"  # SAFE, WARNING, CRITICAL
         self.last_decision = "CLEAR TO PROCEED"
-
-    def update_prompt(self, new_prompt: str):
-        print(f"[VLA Prompt Update] New Language Prompt Received: '{new_prompt}'")
-        self.prompt = new_prompt
 
     def evaluate(self, detections: list) -> dict:
         if not detections:
@@ -331,9 +325,9 @@ class VLAReasoningEngine:
 class VLACosmosMainSimulation:
     """Main Simulation Execution Pipeline."""
 
-    def __init__(self, model_path: str, prompt: str = "Drive safely, yield to pedestrians and vehicles.", conf_thresh: float = 0.45, zenoh_port: int = 7447):
+    def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447):
         self.detector = YOLOXDetector(model_path, conf_thresh=conf_thresh)
-        self.vla_engine = VLAReasoningEngine(prompt=prompt)
+        self.vla_engine = VLAReasoningEngine()
         self.zenoh_port = zenoh_port
         self.running = False
 
@@ -345,17 +339,7 @@ class VLACosmosMainSimulation:
         self.session = zenoh.open(cfg)
         self.pub_perception = self.session.declare_publisher(KEY_PERCEPTION)
         self.pub_control = self.session.declare_publisher(KEY_CONTROL)
-        
-        # Subscribe to dynamic prompt updates from Laptop/User
-        self.sub_prompt = self.session.declare_subscriber(KEY_PROMPT, self._cb_prompt)
-        print(f"[VLA Cosmos] Zenoh topics ready. Active Prompt: '{self.vla_engine.prompt}'")
-
-    def _cb_prompt(self, sample: zenoh.Sample):
-        try:
-            text = sample.payload.to_bytes().decode().strip()
-            self.vla_engine.update_prompt(text)
-        except Exception as e:
-            print(f"[VLA Cosmos] Error updating prompt: {e}")
+        print("[VLA Cosmos] Zenoh topics ready.")
 
     def process_and_draw(self, frame_bgr: np.ndarray):
         t0 = time.time()
@@ -385,7 +369,6 @@ class VLACosmosMainSimulation:
             
             self.pub_control.put(json.dumps({
                 "timestamp": time.time(),
-                "prompt": self.vla_engine.prompt,
                 "command": vla_cmd
             }).encode())
 
@@ -406,28 +389,25 @@ class VLACosmosMainSimulation:
             cv2.putText(img, f"{lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # Top HUD Banner Background (Height = 70px)
+        # Top HUD Banner Background
         h, w = img.shape[:2]
-        cv2.rectangle(img, (0, 0), (w, 70), (15, 20, 28), -1)
-        cv2.line(img, (0, 70), (w, 70), (60, 80, 110), 2)
+        cv2.rectangle(img, (0, 0), (w, 55), (15, 20, 28), -1)
+        cv2.line(img, (0, 55), (w, 55), (60, 80, 110), 2)
 
         # VLA Risk Status Pill
         risk = self.vla_engine.risk_level
         r_color = (0, 255, 0) if risk == "SAFE" else ((0, 165, 255) if risk == "WARNING" else (0, 0, 255))
-        cv2.rectangle(img, (10, 10), (130, 60), r_color, -1)
-        cv2.putText(img, risk, (22, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.rectangle(img, (10, 10), (130, 45), r_color, -1)
+        cv2.putText(img, risk, (22, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-        # VLA Language Prompt & Reasoning Text
-        cv2.putText(img, f"PROMPT: \"{self.vla_engine.prompt}\"", (145, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
-        
+        # VLA Reason Text
         reason = vla_cmd.get("reason", "")
-        cv2.putText(img, f"REASON: {reason}", (145, 53),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 245, 255), 1)
+        cv2.putText(img, f"VLA REASON: {reason}", (145, 33),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 245, 255), 1)
 
         # FPS & Inference Latency
         fps = 1000.0 / max(inf_ms, 1.0)
-        cv2.putText(img, f"{fps:.1f} FPS ({inf_ms:.1f}ms)", (w - 180, 45),
+        cv2.putText(img, f"{fps:.1f} FPS ({inf_ms:.1f}ms)", (w - 180, 33),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 2)
 
 
@@ -435,15 +415,13 @@ def main():
     parser = argparse.ArgumentParser(description="VLA Cosmos Main Simulation & Safety Perception")
     parser.add_argument("--model", default="/home/tesla/models/yolox-sPlus-opt.engine",
                         help="Path to YOLOX Engine (.engine) or ONNX (.onnx) model")
-    parser.add_argument("--prompt", default="Drive safely, yield to pedestrians and vehicles.",
-                        help="VLA Natural Language Instruction Prompt")
     parser.add_argument("--camera", choices=["realsense", "usb"], default="realsense",
                         help="Camera input source (realsense or usb)")
     parser.add_argument("--conf", type=float, default=0.45, help="Confidence threshold")
     parser.add_argument("--demo", action="store_true", help="Launch live GUI video window")
     args = parser.parse_args()
 
-    sim = VLACosmosMainSimulation(args.model, prompt=args.prompt, conf_thresh=args.conf)
+    sim = VLACosmosMainSimulation(args.model, conf_thresh=args.conf)
     sim.start_zenoh()
 
     if args.camera == "realsense":
