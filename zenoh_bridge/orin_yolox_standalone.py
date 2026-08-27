@@ -44,10 +44,26 @@ KEY_KINEMATIC = "aimslab/laptop/localization/kinematic_state"
 KEY_PERCEPTION = "aimslab/orin/perception/objects"
 KEY_CONTROL = "aimslab/orin/control_cmd"
 
-# Autoware YOLOX-sPlus class labels (must match label.txt used during training)
-CLASS_NAMES = [
-    "CAR", "TRUCK", "BUS", "BICYCLE", "PEDESTRIAN", "MOTORBIKE"
+# Standard COCO 80 class labels
+COCO_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush"
 ]
+
+# Autoware 8-class labels (TIER IV / Autoware Universe)
+AUTOWARE_8_CLASSES = [
+    "CAR", "TRUCK", "BUS", "BICYCLE", "MOTORBIKE", "PEDESTRIAN", "TRAILER", "UNKNOWN"
+]
+
+# Default fallback
+CLASS_NAMES = COCO_CLASSES
 try:
     import tensorrt as trt
     import ctypes
@@ -261,11 +277,20 @@ class YOLOXDetector:
         w = np.exp(predictions[:, 2]) * strides
         h = np.exp(predictions[:, 3]) * strides
 
-        # Confidence: objectness * class_score
-        obj_conf = predictions[:, 4]
-        class_conf = predictions[:, 5:]
-        class_ids = np.argmax(class_conf, axis=1)
-        scores = obj_conf * class_conf[np.arange(len(class_ids)), class_ids]
+        # Dynamically set class names mapping based on model output shape
+        num_classes = class_conf.shape[1]
+        if not hasattr(self, '_num_classes_logged'):
+            self._num_classes_logged = True
+            print(f"[YOLOX] Model output has {num_classes} classes.")
+            if num_classes == 80:
+                self.class_names = COCO_CLASSES
+                print("[YOLOX] Applied COCO 80-class label map (person, car, motorcycle, truck, etc.)")
+            elif num_classes == 8:
+                self.class_names = AUTOWARE_8_CLASSES
+                print("[YOLOX] Applied Autoware 8-class label map.")
+            else:
+                self.class_names = [f"class_{i}" for i in range(num_classes)]
+                print(f"[YOLOX] Using generic class_0..class_{num_classes-1} labels.")
 
         mask = scores > self.conf_thresh
         if not np.any(mask):
@@ -346,8 +371,9 @@ class StandaloneOrinPipeline:
         inference_time_ms = (time.time() - t0) * 1000
 
         detections = []
+        names = getattr(self.detector, 'class_names', CLASS_NAMES)
         for box, score, cid in zip(boxes, scores, class_ids):
-            label = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"class_{cid}"
+            label = names[cid] if cid < len(names) else f"class_{cid}"
             detections.append({
                 "label": label,
                 "confidence": float(score),
