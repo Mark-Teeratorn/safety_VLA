@@ -346,7 +346,7 @@ class VLACosmosAssistedReasoner:
                 if not overlaps_yolo:
                     norm_area = (bw * bh) / float(w * h)
                     novel_visual_obstacles.append({
-                        "label": "NOVEL_OPEN_WORLD_HAZARD (Dog/Animal/Debris)",
+                        "label": "DANGER VLA WARNING",
                         "confidence": 0.89,
                         "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
                         "norm_area": norm_area,
@@ -499,14 +499,14 @@ class VLACosmosTestSimulation:
             cv2.putText(img, f"YOLO Hint: {lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
 
-        # 2. Draw Novel Open-World Visual Obstacles (RED Boxes for Dogs, Animals, Debris)
+        # 2. Draw Novel Open-World Visual Obstacles (RED Boxes for DANGER VLA WARNING)
         novel_obstacles = vla_cmd.get("novel_obstacles", [])
         for nvo in novel_obstacles:
             x1, y1, x2, y2 = [int(v) for v in nvo["bbox"]]
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + 310, max(y1, 25)), (0, 0, 255), -1)
-            cv2.putText(img, "VLA BRAIN: NOVEL HAZARD (Dog/Debris)", (x1 + 4, max(y1 - 7, 18)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 2)
+            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + 250, max(y1, 25)), (0, 0, 255), -1)
+            cv2.putText(img, "DANGER VLA WARNING", (x1 + 6, max(y1 - 7, 18)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2)
 
         # Top HUD Banner Background (Height = 70px)
         h, w = img.shape[:2]
