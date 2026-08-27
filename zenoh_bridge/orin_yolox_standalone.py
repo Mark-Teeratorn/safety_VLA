@@ -293,10 +293,8 @@ class StandaloneOrinPipeline:
 
         # Subscribe to kinematic state from laptop
         self.sub_kinematic = self.session.declare_subscriber(KEY_KINEMATIC, self._cb_kinematic)
-        # Publisher for perception output
+        # Publisher for perception output (lightweight JSON detections + kinematics)
         self.pub_perception = self.session.declare_publisher(KEY_PERCEPTION)
-        # Publisher for annotated live video stream over Zenoh
-        self.pub_image = self.session.declare_publisher("aimslab/orin/perception/image_annotated")
         print("[OrinPipeline] Zenoh router active. Ready for processing.")
 
     def _cb_kinematic(self, sample: zenoh.Sample):
@@ -307,15 +305,13 @@ class StandaloneOrinPipeline:
         except Exception as e:
             print(f"[OrinPipeline] Kinematic error: {e}")
 
-    def process_frame(self, frame_bgr: np.ndarray, stream_image: bool = True):
-        """Run YOLOX detection and publish results + annotated JPEG video stream via Zenoh."""
+    def process_frame(self, frame_bgr: np.ndarray):
+        """Run local YOLOX detection on AGX Orin GPU and publish JSON detections + kinematics over Zenoh."""
         t0 = time.time()
         boxes, scores, class_ids = self.detector.infer(frame_bgr)
         inference_time_ms = (time.time() - t0) * 1000
 
         detections = []
-        annotated_frame = frame_bgr.copy() if stream_image else None
-
         for box, score, cid in zip(boxes, scores, class_ids):
             label = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"class_{cid}"
             detections.append({
@@ -323,12 +319,6 @@ class StandaloneOrinPipeline:
                 "confidence": float(score),
                 "bbox": [float(v) for v in box]  # [x1, y1, x2, y2]
             })
-
-            if stream_image:
-                x1, y1, x2, y2 = [int(v) for v in box]
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(annotated_frame, f"{label} {score:.2f}",
-                            (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         with self.lock:
             kinematic = self.latest_kinematic
@@ -342,16 +332,6 @@ class StandaloneOrinPipeline:
         }).encode()
 
         self.pub_perception.put(payload)
-
-        # Compress and stream annotated frame over Zenoh
-        if stream_image and annotated_frame is not None:
-            cv2.putText(annotated_frame, f"FPS: {1000/max(inference_time_ms,1):.1f} ({inference_time_ms:.1f}ms)",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-            ret, jpg_bytes = cv2.imencode('.jpg', annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            if ret:
-                header = np.array([time.time()], dtype=np.float64).tobytes()
-                self.pub_image.put(header + jpg_bytes.tobytes())
-
         return detections, inference_time_ms
 
     def stop(self):
