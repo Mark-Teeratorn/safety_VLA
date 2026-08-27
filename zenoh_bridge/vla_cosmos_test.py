@@ -310,62 +310,7 @@ class VLACosmosAssistedReasoner:
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
-        # 1. Open-World Visual Saliency Inspection on raw_frame_bgr
-        h, w = raw_frame_bgr.shape[:2]
-        
-        # Central driving trajectory region (middle 70% width, lower 65% height)
-        roi_x1, roi_x2 = int(w * 0.15), int(w * 0.85)
-        roi_y1, roi_y2 = int(h * 0.25), int(h * 0.95)
-        roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
-        
-        # Calculate visual contrast & gradient saliency (detects dogs, phones, objects held in front of camera)
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        magnitude = cv2.magnitude(grad_x, grad_y)
-        
-        # Threshold high-saliency visual regions
-        _, saliency_mask = cv2.threshold(magnitude.astype(np.uint8), 35, 255, cv2.THRESH_BINARY)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-        saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_CLOSE, kernel)
-        
-        contours, _ = cv2.findContours(saliency_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        novel_visual_obstacles = []
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area > 2000:
-                bx, by, bw, bh = cv2.boundingRect(cnt)
-                aspect_ratio = float(bw) / float(bh) if bh > 0 else 0
-                
-                # Filter out long, thin road lane markings / lines (lane lines have high aspect ratio > 3.0 or < 0.25)
-                is_lane_line = (aspect_ratio > 3.2 or aspect_ratio < 0.25 or bw < 18 or bh < 18)
-                
-                # Ignore lane lines and lower dashboard windshield area
-                if not is_lane_line and (by + bh) < (roi.shape[0] * 0.88):
-                    abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
-                    abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
-                    
-                    # Check overlap with existing YOLO hints
-                    overlaps_yolo = False
-                    for yh in yolo_hints:
-                        yx1, yy1, yx2, yy2 = yh["bbox"]
-                        if not (abs_x2 < yx1 or abs_x1 > yx2 or abs_y2 < yy1 or abs_y1 > yy2):
-                            overlaps_yolo = True
-                            break
-                    
-                    if not overlaps_yolo:
-                        norm_area = (bw * bh) / float(w * h)
-                        novel_visual_obstacles.append({
-                            "label": "DANGER VLA WARNING",
-                            "confidence": 0.89,
-                            "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
-                            "norm_area": norm_area,
-                            "is_novel": True,
-                            "source": "VLA 2D Visual Grounding"
-                        })
-
-        # Combine YOLO hints with Open-World Visual Obstacles
+        # Process YOLO Spatial Hints directly for VLA Cognitive Safety Reasoning
         all_threats = []
         
         for det in yolo_hints:
@@ -382,19 +327,11 @@ class VLACosmosAssistedReasoner:
                 "bbox": det["bbox"]
             })
 
-        for nvo in novel_visual_obstacles:
-            all_threats.append({
-                "label": nvo["label"],
-                "score": nvo["norm_area"] * 2.5,  # High priority for open-world visual hazards
-                "confidence": nvo["confidence"],
-                "bbox": nvo["bbox"]
-            })
-
         vla_prompt = self.construct_vla_prompt(all_threats)
 
         if not all_threats:
             self.risk_level = "SAFE"
-            self.last_decision = "[CoT Reasoning]: 1. Grounding: Trajectory clear. 2. Analysis: No obstacles. 3. Risk: Low. 4. Decision: MAINTAIN CRUISING SPEED."
+            self.last_decision = "[CoT Reasoning]: 1. Visual Scene: Trajectory clear. 2. Analysis: No obstacles. 3. Risk: Low. 4. Decision: MAINTAIN CRUISING SPEED."
             return {
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
@@ -410,8 +347,8 @@ class VLACosmosAssistedReasoner:
             self.risk_level = "CRITICAL"
             tag_name = top["label"]
             self.last_decision = (
-                f"[CoT Reasoning]: 1. Grounding: Visual hazard [{tag_name}] spotted in Img1. "
-                f"2. Analysis: Directly blocking forward trajectory corridor. "
+                f"[CoT Reasoning]: 1. Visual Scene: Target [{tag_name}] spotted ahead. "
+                f"2. Threat: Directly blocking forward trajectory corridor. "
                 f"3. Risk Rating: CRITICAL collision threat. "
                 f"4. Action: EMERGENCY BRAKE (0.0 m/s)!"
             )
@@ -420,15 +357,15 @@ class VLACosmosAssistedReasoner:
                 "emergency_brake": True,
                 "reason": self.last_decision,
                 "vla_prompt": vla_prompt,
-                "novel_obstacles": novel_visual_obstacles
+                "novel_obstacles": []
             }
         elif top["score"] > 0.03:
             self.risk_level = "WARNING"
             speed = max(0.5, self.cruise_speed * 0.4)
             tag_name = top["label"]
             self.last_decision = (
-                f"[CoT Reasoning]: 1. Grounding: Target [{tag_name}] observed ahead. "
-                f"2. Analysis: Medium proximity in path. "
+                f"[CoT Reasoning]: 1. Visual Scene: Target [{tag_name}] observed ahead. "
+                f"2. Threat: Medium proximity in path. "
                 f"3. Risk Rating: WARNING level. "
                 f"4. Action: SLOW DOWN ({speed:.1f} m/s)."
             )
@@ -437,14 +374,14 @@ class VLACosmosAssistedReasoner:
                 "emergency_brake": False,
                 "reason": self.last_decision,
                 "vla_prompt": vla_prompt,
-                "novel_obstacles": novel_visual_obstacles
+                "novel_obstacles": []
             }
         else:
             self.risk_level = "SAFE"
             tag_name = top["label"]
             self.last_decision = (
-                f"[CoT Reasoning]: 1. Grounding: [{tag_name}] detected at periphery. "
-                f"2. Analysis: Outside vehicle clearance boundary. "
+                f"[CoT Reasoning]: 1. Visual Scene: [{tag_name}] detected at periphery. "
+                f"2. Threat: Outside vehicle clearance boundary. "
                 f"3. Risk Rating: SAFE. "
                 f"4. Action: TRACKING & CRUISING ({self.cruise_speed:.1f} m/s)."
             )
@@ -453,7 +390,7 @@ class VLACosmosAssistedReasoner:
                 "emergency_brake": False,
                 "reason": self.last_decision,
                 "vla_prompt": vla_prompt,
-                "novel_obstacles": novel_visual_obstacles
+                "novel_obstacles": []
             }
 
 
@@ -529,15 +466,6 @@ class VLACosmosTestSimulation:
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             cv2.putText(img, f"YOLO Hint: {lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
-
-        # 2. Draw Novel Open-World Visual Obstacles (RED Boxes from VLA 2D Visual Grounding)
-        novel_obstacles = vla_cmd.get("novel_obstacles", [])
-        for nvo in novel_obstacles:
-            x1, y1, x2, y2 = [int(v) for v in nvo["bbox"]]
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + 330, max(y1, 25)), (0, 0, 255), -1)
-            cv2.putText(img, "DANGER VLA WARNING (VLA 2D Grounding)", (x1 + 6, max(y1 - 7, 18)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 2)
 
         # Top HUD Banner Background (Height = 70px)
         h, w = img.shape[:2]
