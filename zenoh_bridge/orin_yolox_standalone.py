@@ -99,23 +99,26 @@ class TensorRTEngine:
                 self.output_shape = shape
                 self.output_size = size
                 self.output_dtype = dtype
-                self.output_host = np.empty(shape, dtype=dtype)
+        # Create a dedicated CUDA stream for asynchronous execution
+        self.stream = ctypes.c_void_p()
+        self.cudart.cudaStreamCreate(ctypes.byref(self.stream))
 
     def infer(self, blob_np: np.ndarray) -> np.ndarray:
-        # Host to Device (cudaMemcpyHostToDevice = 1)
+        # Host to Device (async)
         blob_contig = np.ascontiguousarray(blob_np, dtype=self.input_dtype)
-        self.cudart.cudaMemcpy(self.input_ptr, blob_contig.ctypes.data, self.input_size, 1)
+        self.cudart.cudaMemcpyAsync(self.input_ptr, blob_contig.ctypes.data, self.input_size, 1, self.stream)
 
-        # Set addresses
+        # Set addresses for inputs and outputs
         for i in range(self.num_tensors):
             tname = self.engine.get_tensor_name(i)
             self.context.set_tensor_address(tname, self.bindings[i])
 
-        # Execute
-        self.context.execute_async_v3(0)
+        # Execute using non-default stream
+        self.context.execute_async_v3(self.stream.value)
 
-        # Device to Host (cudaMemcpyDeviceToHost = 2)
-        self.cudart.cudaMemcpy(self.output_host.ctypes.data, self.output_ptr, self.output_size, 2)
+        # Device to Host (async) and synchronize stream
+        self.cudart.cudaMemcpyAsync(self.output_host.ctypes.data, self.output_ptr, self.output_size, 2, self.stream)
+        self.cudart.cudaStreamSynchronize(self.stream)
         return self.output_host
 
 
