@@ -284,42 +284,123 @@ class VLAReasoningEngine:
         self.risk_level = "SAFE"  # SAFE, WARNING, CRITICAL
         self.last_decision = "CLEAR TO PROCEED"
 
-    def evaluate(self, detections: list) -> dict:
-        if not detections:
-            self.risk_level = "SAFE"
-            self.last_decision = "Path Clear. Cruising."
-            return {"target_speed": self.cruise_speed, "emergency_brake": False, "reason": self.last_decision}
+    def construct_vla_prompt(self, yolo_hints: list) -> str:
+        """Constructs high-sensitivity VLA prompt forcing independent visual inspection of raw HD image frame."""
+        hint_lines = []
+        for i, d in enumerate(yolo_hints, 1):
+            box = [int(v) for v in d['bbox']]
+            hint_lines.append(f"- Candidate {i}: {d['label']} {box} ({d['confidence']:.2f})")
 
-        threats = []
-        for det in detections:
+        hints_str = "\n".join(hint_lines) if hint_lines else "- None"
+
+        return (
+            f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
+            f"[INPUTS]:\n"
+            f"- Image 1: High-Resolution Raw RGB View (Primary inspection for open-world/long-tail hazards).\n"
+            f"- Image 2: YOLO Assistance Overlay View.\n\n"
+            f"[YOLO ASSISTANCE HINTS]:\n{hints_str}\n\n"
+            f"[CHAIN-OF-THOUGHT (CoT) REASONING INSTRUCTIONS]:\n"
+            f"1. VISUAL INSPECTION: Thoroughly scan Image 1 (Raw View) across the driving lane floor.\n"
+            f"2. GROUNDING & THREAT ANALYSIS: Ground any unlabelled obstacle and measure trajectory collision threat.\n"
+            f"3. ACTION SYNTHESIS: Output Risk (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and Step-by-Step CoT Explanation."
+        )
+
+    def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
+        h, w = raw_frame_bgr.shape[:2]
+        frame_area = float(w * h)
+        ego_lane_x1, ego_lane_x2 = int(w * 0.30), int(w * 0.70)
+        
+        all_threats = []
+        for det in yolo_hints:
             lbl = det["label"]
             conf = det["confidence"]
             x1, y1, x2, y2 = det["bbox"]
-            area = max(0, x2 - x1) * max(0, y2 - y1)
-            norm_area = area / (640.0 * 480.0)
+            
+            box_w = max(0, x2 - x1)
+            box_h = max(0, y2 - y1)
+            area = box_w * box_h
+            norm_area = area / frame_area
+            
+            cx = (x1 + x2) / 2.0
+            vulnerability_mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD"] else 1.0
+            
+            in_ego_lane = (ego_lane_x1 <= cx <= ego_lane_x2)
+            lane_mult = 1.0 if in_ego_lane else 0.25
+            y_proximity = (y2 / float(h))
+            
+            threat_score = norm_area * vulnerability_mult * lane_mult * conf * (y_proximity ** 2)
+            
+            all_threats.append({
+                "label": lbl,
+                "score": threat_score,
+                "confidence": conf,
+                "bbox": det["bbox"],
+                "in_ego_lane": in_ego_lane,
+                "norm_area": norm_area
+            })
 
-            # High vulnerability multiplier for pedestrians / cyclists
-            mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else 1.0
-            risk_score = norm_area * mult * conf
+        vla_prompt = self.construct_vla_prompt(all_threats)
 
-            threats.append({"label": lbl, "score": risk_score, "conf": conf})
+        if not all_threats:
+            self.risk_level = "SAFE"
+            self.last_decision = "[CoT Reasoning]: 1. Trajectory: Clear corridor. 2. Threat: Zero targets in lane. 3. Risk: SAFE. 4. Control: MAINTAIN CRUISING SPEED (3.0 m/s)."
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
 
-        threats.sort(key=lambda t: t["score"], reverse=True)
-        top = threats[0]
+        all_threats.sort(key=lambda t: t["score"], reverse=True)
+        top = all_threats[0]
 
-        if top["score"] > 0.20:
+        if top["score"] > 0.15 and top["in_ego_lane"]:
             self.risk_level = "CRITICAL"
-            self.last_decision = f"EMERGENCY BRAKE: {top['label']} dangerously close!"
-            return {"target_speed": 0.0, "emergency_brake": True, "reason": self.last_decision}
-        elif top["score"] > 0.08:
+            tag_name = top["label"]
+            self.last_decision = (
+                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] directly blocking ego-lane. "
+                f"2. Collision Proximity: Imminent threat (area={top['norm_area']*100:.1f}%). "
+                f"3. Risk Rating: CRITICAL. "
+                f"4. Action: EMERGENCY BRAKE (0.0 m/s)!"
+            )
+            return {
+                "target_speed": 0.0,
+                "emergency_brake": True,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
+        elif top["score"] > 0.04:
             self.risk_level = "WARNING"
-            speed = max(0.5, self.cruise_speed * 0.4)
-            self.last_decision = f"SLOW DOWN: Approaching {top['label']} ({speed:.1f} m/s)"
-            return {"target_speed": speed, "emergency_brake": False, "reason": self.last_decision}
+            speed = max(1.0, self.cruise_speed * 0.5)
+            tag_name = top["label"]
+            location_str = "in ego-lane" if top["in_ego_lane"] else "in adjacent lane"
+            self.last_decision = (
+                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] observed {location_str}. "
+                f"2. Collision Proximity: Moderate distance. "
+                f"3. Risk Rating: WARNING. "
+                f"4. Action: ADAPTIVE SLOW DOWN ({speed:.1f} m/s)."
+            )
+            return {
+                "target_speed": speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
         else:
             self.risk_level = "SAFE"
-            self.last_decision = f"TRACKING: {top['label']} at safe distance."
-            return {"target_speed": self.cruise_speed, "emergency_brake": False, "reason": self.last_decision}
+            tag_name = top["label"]
+            self.last_decision = (
+                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] detected at peripheral safe zone. "
+                f"2. Collision Proximity: No lane intrusion. "
+                f"3. Risk Rating: SAFE. "
+                f"4. Action: CRUISING ({self.cruise_speed:.1f} m/s)."
+            )
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
 
 
 class VLACosmosMainSimulation:
@@ -357,7 +438,7 @@ class VLACosmosMainSimulation:
                 })
 
         # Run VLA Safety Reasoning
-        vla_cmd = self.vla_engine.evaluate(detections)
+        vla_cmd = self.vla_engine.evaluate(frame_bgr, detections)
 
         # Publish Perception & Control via Zenoh
         if hasattr(self, 'pub_perception'):
