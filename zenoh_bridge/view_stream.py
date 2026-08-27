@@ -36,8 +36,10 @@ def main():
     last_time = time.time()
     frame_count = 0
 
+    has_gui = True
+
     def on_image_sample(sample: zenoh.Sample):
-        nonlocal last_time, frame_count
+        nonlocal last_time, frame_count, has_gui
         try:
             raw_bytes = bytes(sample.payload.to_bytes())
             if len(raw_bytes) < 8:
@@ -52,23 +54,43 @@ def main():
                 latency_ms = (time.time() - timestamp) * 1000
                 cv2.putText(frame_bgr, f"Network Latency: {latency_ms:.1f}ms",
                             (10, frame_bgr.shape[0] - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                cv2.imshow("Orin Real-Time YOLOX Stream", frame_bgr)
                 frame_count += 1
+
+                if has_gui:
+                    try:
+                        cv2.imshow("Orin Real-Time YOLOX Stream", frame_bgr)
+                    except Exception as gui_err:
+                        print(f"[Viewer] GUI window not available on laptop ({gui_err}).")
+                        print("[Viewer] Fallback: Saving live frame to 'latest_stream.jpg' continuously...")
+                        has_gui = False
+                        cv2.imwrite("latest_stream.jpg", frame_bgr)
+                else:
+                    cv2.imwrite("latest_stream.jpg", frame_bgr)
+                    if frame_count % 30 == 0:
+                        print(f"[Viewer] Stream active: Received {frame_count} frames | Latency: {latency_ms:.1f}ms | Saved to latest_stream.jpg")
         except Exception as e:
-            print(f"[Viewer] Decode error: {e}")
+            print(f"[Viewer] Sample error: {e}")
 
     sub = session.declare_subscriber(args.topic, on_image_sample)
-    print("[Viewer] Streaming video feed... Press 'q' in the window to quit.")
+    print("[Viewer] Streaming video feed... Press Ctrl+C to stop.")
 
     try:
         while True:
-            if cv2.waitKey(1) == ord('q'):
-                break
+            if has_gui:
+                try:
+                    if cv2.waitKey(1) == ord('q'):
+                        break
+                except Exception:
+                    pass
             time.sleep(0.01)
     except KeyboardInterrupt:
         pass
     finally:
-        cv2.destroyAllWindows()
+        if has_gui:
+            try:
+                cv2.destroyAllWindows()
+            except Exception:
+                pass
         sub.undeclare()
         session.close()
         print("[Viewer] Stopped.")
