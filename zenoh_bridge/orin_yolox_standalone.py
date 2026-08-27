@@ -179,39 +179,32 @@ class YOLOXDetector:
             self.backend = "cv2_dnn"
 
     def preprocess(self, img: np.ndarray):
-        """Letterbox resize and normalize image."""
+        """Official YOLOX ValTransform preprocessing: Top-Left padding & BGR float32."""
         h, w = img.shape[:2]
         r = min(self.input_h / h, self.input_w / w)
         new_unpad = (int(round(w * r)), int(round(h * r)))
-        dw, dh = self.input_w - new_unpad[0], self.input_h - new_unpad[1]
-        dw /= 2
-        dh /= 2
 
         if (w, h) != new_unpad:
             img_resized = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
         else:
             img_resized = img.copy()
 
-        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-        img_padded = cv2.copyMakeBorder(
-            img_resized, top, bottom, left, right,
-            cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )
+        # Top-Left padding (fill 114) as used in official Megvii / Autoware YOLOX ValTransform
+        img_padded = np.ones((self.input_h, self.input_w, 3), dtype=np.uint8) * 114
+        img_padded[:new_unpad[1], :new_unpad[0]] = img_resized
 
         if self.backend in ["ort", "trt_engine"]:
-            blob = img_padded.transpose((2, 0, 1))[::-1]  # BGR to RGB
+            blob = img_padded.transpose((2, 0, 1))  # Keep BGR order (HWC -> CHW)
             blob = np.ascontiguousarray(blob, dtype=np.float32)
             blob = np.expand_dims(blob, axis=0)
         else:
-            # OpenCV DNN blobFromImage (handles BGR to RGB swap and scale)
-            blob = cv2.dnn.blobFromImage(img_padded, scalefactor=1.0, size=(self.input_w, self.input_h), swapRB=True)
+            blob = cv2.dnn.blobFromImage(img_padded, scalefactor=1.0, size=(self.input_w, self.input_h), swapRB=False)
 
-        return blob, r, (dw, dh)
+        return blob, r
 
     def infer(self, img: np.ndarray):
         """Run object detection on BGR image."""
-        blob, ratio, (dw, dh) = self.preprocess(img)
+        blob, ratio = self.preprocess(img)
 
         if self.backend == "trt_engine":
             predictions = self.trt_engine.infer(blob)
@@ -222,10 +215,10 @@ class YOLOXDetector:
             self.net.setInput(blob)
             predictions = self.net.forward()
 
-        boxes, scores, class_ids = self.postprocess(predictions[0], ratio, dw, dh, img.shape)
+        boxes, scores, class_ids = self.postprocess(predictions[0], ratio, img.shape)
         return boxes, scores, class_ids
 
-    def postprocess(self, predictions: np.ndarray, ratio: float, dw: float, dh: float, orig_shape: tuple):
+    def postprocess(self, predictions: np.ndarray, ratio: float, orig_shape: tuple):
         """Decode YOLOX predictions and apply NMS."""
         if len(predictions.shape) == 3:
             predictions = predictions[0]
@@ -244,13 +237,13 @@ class YOLOXDetector:
         scores = scores[mask]
         class_ids = class_ids[mask]
 
-        # Convert [center_x, center_y, w, h] to [x1, y1, x2, y2] in original image coordinates
-        x1 = (boxes[:, 0] - boxes[:, 2] / 2 - dw) / ratio
-        y1 = (boxes[:, 1] - boxes[:, 3] / 2 - dh) / ratio
-        x2 = (boxes[:, 0] + boxes[:, 2] / 2 - dw) / ratio
-        y2 = (boxes[:, 1] + boxes[:, 3] / 2 - dh) / ratio
+        # Convert [center_x, center_y, w, h] to [x1, y1, x2, y2] unpadded top-left
+        x1 = (boxes[:, 0] - boxes[:, 2] / 2) / ratio
+        y1 = (boxes[:, 1] - boxes[:, 3] / 2) / ratio
+        x2 = (boxes[:, 0] + boxes[:, 2] / 2) / ratio
+        y2 = (boxes[:, 1] + boxes[:, 3] / 2) / ratio
 
-        # Clip to image boundaries
+        # Clip to original image boundaries
         h, w = orig_shape[:2]
         x1 = np.clip(x1, 0, w)
         y1 = np.clip(y1, 0, h)
