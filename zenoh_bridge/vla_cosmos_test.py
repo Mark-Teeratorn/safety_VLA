@@ -287,7 +287,7 @@ class VLACosmosAssistedReasoner:
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs ultra-compact, token-efficient dual-image VLA prompt (~45 tokens)."""
+        """Constructs explicit VLM prompt forcing visual scanning of novel/unlabelled hazards (dogs, debris)."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
             box = [int(v) for v in d['bbox']]
@@ -296,12 +296,13 @@ class VLACosmosAssistedReasoner:
         hints_str = "\n".join(hint_lines) if hint_lines else "- None"
 
         return (
-            f"[VLA Safety Brain]\n"
-            f"Inputs: Img1=Raw RGB | Img2=YOLO Overlay\n"
-            f"YOLO Hints:\n{hints_str}\n\n"
-            f"Task:\n"
-            f"1. Inspect Img1 for novel/long-tail hazards missed by YOLO.\n"
-            f"2. Output Risk (CRITICAL/WARNING/SAFE), Speed (m/s), Brake (True/False), Reason."
+            f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Safety Brain.\n\n"
+            f"[INPUTS]: Image 1 = Raw RGB Camera View | Image 2 = YOLO Overlay View\n"
+            f"[YOLO HINTS]:\n{hints_str}\n\n"
+            f"[EXPLICIT NOVEL HAZARD INSTRUCTIONS]:\n"
+            f"1. SCAN IMAGE 1 ROAD SURFACE: Look for ANY physical object on the road in the vehicle path (e.g. dogs, animals, boxes, debris, strollers) that has NO YOLO box in Image 2.\n"
+            f"2. EVALUATE COLLISION THREAT: Assess if any unlabelled novel obstacle or YOLO target blocks the vehicle trajectory.\n"
+            f"3. DECISION OUTPUT: Output Risk (CRITICAL/WARNING/SAFE), Target Speed (m/s), Emergency Brake (True/False), and Visual Reason."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
