@@ -287,30 +287,29 @@ class VLACosmosAssistedReasoner:
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        hint_labels = [f"{d['label']} ({d['confidence']:.2f})" for d in yolo_hints]
-        hints_str = ", ".join(hint_labels) if hint_labels else "None (No closed-set targets flagged by YOLO)"
+        """Constructs explicit dual-image VLA cognitive prompt comparing Raw RGB & YOLO Annotated frames."""
+        hint_lines = []
+        for i, d in enumerate(yolo_hints, 1):
+            hint_lines.append(f"  Candidate {i}: {d['label']} | bbox: {d['bbox']} | conf: {d['confidence']:.2f}")
+
+        hints_str = "\n".join(hint_lines) if hint_lines else "  None (No candidate objects flagged by YOLO)"
 
         return (
-            f"[SYSTEM INSTRUCTION]: Primary VLA Autonomous Safety Brain.\n"
-            f"[YOLO ASSISTANCE HINTS]: Candidate targets flagged: [{hints_str}].\n"
-            f"[TASK]: Analyze full camera imagery. Evaluate unlabelled / long-tail hazards (dogs, animals, debris).\n"
-            f"[EVALUATION]: Output risk level (SAFE/WARNING/CRITICAL), brake trigger, and target speed."
+            f"[SYSTEM ROLE]: You are Cosmos-VLA, an Autonomous Vehicle Vision-Language Safety Reasoning Model.\n"
+            f"[INPUT 1]: Image 1 — Raw RGB Camera View (unimpaired original frame for long-tail hazard visual inspection).\n"
+            f"[INPUT 2]: Image 2 — YOLO Spatial Annotation View (contains 2D candidate bounding box overlays).\n\n"
+            f"[YOLO SPATIAL ANNOTATION HINTS]:\n{hints_str}\n\n"
+            f"[COGNITIVE REASONING INSTRUCTIONS]:\n"
+            f"1. Compare Image 1 (Raw View) and Image 2 (YOLO Overlay View).\n"
+            f"2. Inspect Image 1 for novel or long-tail hazards (e.g. dogs, animals, fallen debris, boxes, strollers) "
+            f"that YOLO missed or left unclassified.\n"
+            f"3. Evaluate collision risk level (CRITICAL / WARNING / SAFE).\n"
+            f"4. Output recommended target speed (m/s), emergency brake trigger, and detailed safety explanation."
         )
 
-    def evaluate(self, frame_bgr: np.ndarray, yolo_hints: list) -> dict:
+    def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
         vla_prompt = self.construct_vla_prompt(yolo_hints)
 
-        if not yolo_hints:
-            self.risk_level = "SAFE"
-            self.last_decision = "Path Clear. Cruising safely."
-            return {
-                "target_speed": self.cruise_speed,
-                "emergency_brake": False,
-                "reason": self.last_decision,
-                "vla_prompt": vla_prompt
-            }
-
-        # Evaluate target threat proximity & vulnerability
         threats = []
         for det in yolo_hints:
             lbl = det["label"]
@@ -319,27 +318,58 @@ class VLACosmosAssistedReasoner:
             area = max(0, x2 - x1) * max(0, y2 - y1)
             norm_area = area / (640.0 * 480.0)
 
+            # Pedestrians, Cyclists, and Long-Tail Novel Hazards get 2.0x priority multiplier
             mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD"] else 1.0
-            risk_score = norm_area * mult * conf
+            threats.append({
+                "label": lbl,
+                "score": norm_area * mult * conf,
+                "confidence": conf
+            })
 
-            threats.append({"label": lbl, "score": risk_score, "conf": conf})
+        if not threats:
+            self.risk_level = "SAFE"
+            self.last_decision = "Dual-Image Assessment: Trajectory clear. Cruising safely."
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
 
         threats.sort(key=lambda t: t["score"], reverse=True)
         top = threats[0]
 
-        if top["score"] > 0.20:
+        if top["score"] > 0.15:
             self.risk_level = "CRITICAL"
-            self.last_decision = f"EMERGENCY BRAKE: {top['label']} dangerously close!"
-            return {"target_speed": 0.0, "emergency_brake": True, "reason": self.last_decision, "vla_prompt": vla_prompt}
-        elif top["score"] > 0.08:
+            tag_name = top["label"]
+            self.last_decision = f"EMERGENCY BRAKE: [{tag_name}] detected in trajectory!"
+            return {
+                "target_speed": 0.0,
+                "emergency_brake": True,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
+        elif top["score"] > 0.05:
             self.risk_level = "WARNING"
             speed = max(0.5, self.cruise_speed * 0.4)
-            self.last_decision = f"SLOW DOWN: Approaching {top['label']} ({speed:.1f} m/s)"
-            return {"target_speed": speed, "emergency_brake": False, "reason": self.last_decision, "vla_prompt": vla_prompt}
+            tag_name = top["label"]
+            self.last_decision = f"SLOW DOWN: Approaching [{tag_name}] ({speed:.1f} m/s)"
+            return {
+                "target_speed": speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
         else:
             self.risk_level = "SAFE"
-            self.last_decision = f"TRACKING: {top['label']} at safe distance."
-            return {"target_speed": self.cruise_speed, "emergency_brake": False, "reason": self.last_decision, "vla_prompt": vla_prompt}
+            tag_name = top["label"]
+            self.last_decision = f"TRACKING: [{tag_name}] at safe distance."
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
 
 
 class VLACosmosTestSimulation:
