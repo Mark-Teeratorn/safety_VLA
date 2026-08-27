@@ -52,26 +52,41 @@ CLASS_NAMES = [
 
 
 class YOLOXDetector:
-    """Standalone YOLOX Inference Engine using ONNXRuntime GPU."""
+    """Standalone YOLOX Inference Engine using ONNXRuntime or OpenCV DNN (CUDA)."""
 
-    def __init__(self, model_path: str, conf_thresh: float = 0.3, nms_thresh: float = 0.45):
+    def __init__(self, model_path: str, conf_thresh: float = 0.3, nms_thresh: float = 0.45, input_size: tuple = (640, 640)):
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
+        self.input_w, self.input_h = input_size
+        self.backend = None
 
-        if not _HAS_ORT:
-            raise RuntimeError("onnxruntime is not installed. Run: pip install onnxruntime-gpu")
+        if _HAS_ORT:
+            try:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                print(f"[YOLOX] Loading model with ONNXRuntime: {model_path}")
+                self.session = ort.InferenceSession(model_path, providers=providers)
+                model_inputs = self.session.get_inputs()
+                self.input_name = model_inputs[0].name
+                shape = model_inputs[0].shape
+                if isinstance(shape[2], int) and isinstance(shape[3], int):
+                    self.input_h, self.input_w = shape[2], shape[3]
+                self.backend = "ort"
+                print(f"[YOLOX] ONNXRuntime backend ready ({self.input_w}x{self.input_h})")
+            except Exception as e:
+                print(f"[YOLOX] ONNXRuntime init failed ({e}), falling back to OpenCV DNN...")
 
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        print(f"[YOLOX] Loading model: {model_path} with providers: {providers}")
-        self.session = ort.InferenceSession(model_path, providers=providers)
-
-        # Inspect input shape
-        model_inputs = self.session.get_inputs()
-        self.input_name = model_inputs[0].name
-        shape = model_inputs[0].shape
-        self.input_h = shape[2] if isinstance(shape[2], int) else 640
-        self.input_w = shape[3] if isinstance(shape[3], int) else 640
-        print(f"[YOLOX] Input size: {self.input_w}x{self.input_h}")
+        if self.backend is None:
+            print(f"[YOLOX] Loading model with OpenCV DNN: {model_path}")
+            self.net = cv2.dnn.readNetFromONNX(model_path)
+            try:
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                print("[YOLOX] OpenCV DNN CUDA backend enabled")
+            except Exception:
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+                print("[YOLOX] OpenCV DNN CPU backend enabled")
+            self.backend = "cv2_dnn"
 
     def preprocess(self, img: np.ndarray):
         """Letterbox resize and normalize image."""
@@ -94,17 +109,26 @@ class YOLOXDetector:
             cv2.BORDER_CONSTANT, value=(114, 114, 114)
         )
 
-        # Convert BGR to RGB, HWC to CHW, uint8 to float32
-        blob = img_padded.transpose((2, 0, 1))[::-1]  # BGR to RGB
-        blob = np.ascontiguousarray(blob, dtype=np.float32)
-        blob = np.expand_dims(blob, axis=0)
+        if self.backend == "ort":
+            blob = img_padded.transpose((2, 0, 1))[::-1]  # BGR to RGB
+            blob = np.ascontiguousarray(blob, dtype=np.float32)
+            blob = np.expand_dims(blob, axis=0)
+        else:
+            # OpenCV DNN blobFromImage (handles BGR to RGB swap and scale)
+            blob = cv2.dnn.blobFromImage(img_padded, scalefactor=1.0, size=(self.input_w, self.input_h), swapRB=True)
+
         return blob, r, (dw, dh)
 
     def infer(self, img: np.ndarray):
         """Run object detection on BGR image."""
         blob, ratio, (dw, dh) = self.preprocess(img)
-        outputs = self.session.run(None, {self.input_name: blob})
-        predictions = outputs[0]  # Shape: [1, num_boxes, 85] or similar
+
+        if self.backend == "ort":
+            outputs = self.session.run(None, {self.input_name: blob})
+            predictions = outputs[0]
+        else:
+            self.net.setInput(blob)
+            predictions = self.net.forward()
 
         boxes, scores, class_ids = self.postprocess(predictions[0], ratio, dw, dh, img.shape)
         return boxes, scores, class_ids
