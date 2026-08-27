@@ -179,37 +179,35 @@ class YOLOXDetector:
             self.backend = "cv2_dnn"
 
     def preprocess(self, img: np.ndarray):
-        """Autoware tensorrt_yolox Preprocessing: Centered Letterbox + RGB float32."""
+        """
+        Exact Autoware tensorrt_yolox preprocessing (verified from C++ source + CUDA kernel):
+        - Top-left letterbox padding (value 114)
+        - BGR channel order preserved (NO RGB swap)
+        - norm_factor = 1.0 (NO /255 normalization, raw [0-255] float32)
+        """
         h, w = img.shape[:2]
         r = min(self.input_h / h, self.input_w / w)
-        new_unpad = (int(round(w * r)), int(round(h * r)))
-        dw = (self.input_w - new_unpad[0]) / 2.0
-        dh = (self.input_h - new_unpad[1]) / 2.0
+        new_h, new_w = int(round(h * r)), int(round(w * r))
 
-        if (w, h) != new_unpad:
-            img_resized = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+        if (w, h) != (new_w, new_h):
+            img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
         else:
             img_resized = img.copy()
 
-        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-        img_padded = cv2.copyMakeBorder(
-            img_resized, top, bottom, left, right,
-            cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )
+        # Top-left padding with 114 (Autoware CUDA kernel: letter_bot=new_h, letter_right=new_w)
+        img_padded = np.full((self.input_h, self.input_w, 3), 114, dtype=np.uint8)
+        img_padded[:new_h, :new_w] = img_resized
 
-        if self.backend in ["ort", "trt_engine"]:
-            blob = img_padded.transpose((2, 0, 1))[::-1]  # BGR to RGB (Autoware standard)
-            blob = np.ascontiguousarray(blob, dtype=np.float32) / 255.0  # Normalize to [0.0, 1.0]
-            blob = np.expand_dims(blob, axis=0)
-        else:
-            blob = cv2.dnn.blobFromImage(img_padded, scalefactor=1.0 / 255.0, size=(self.input_w, self.input_h), swapRB=True)
+        # HWC → CHW, keep BGR order, cast to float32, NO /255 (norm_factor=1.0)
+        blob = img_padded.transpose((2, 0, 1)).astype(np.float32)
+        blob = np.ascontiguousarray(blob)
+        blob = np.expand_dims(blob, axis=0)
 
-        return blob, r, (dw, dh)
+        return blob, r
 
     def infer(self, img: np.ndarray):
         """Run object detection on BGR image."""
-        blob, ratio, (dw, dh) = self.preprocess(img)
+        blob, ratio = self.preprocess(img)
 
         if self.backend == "trt_engine":
             predictions = self.trt_engine.infer(blob)
@@ -220,15 +218,19 @@ class YOLOXDetector:
             self.net.setInput(blob)
             predictions = self.net.forward()
 
-        boxes, scores, class_ids = self.postprocess(predictions[0], ratio, dw, dh, img.shape)
+        boxes, scores, class_ids = self.postprocess(predictions[0], ratio, img.shape)
         return boxes, scores, class_ids
 
-    def postprocess(self, predictions: np.ndarray, ratio: float, dw: float, dh: float, orig_shape: tuple):
-        """Decode YOLOX predictions and apply NMS."""
+    def postprocess(self, predictions: np.ndarray, ratio: float, orig_shape: tuple):
+        """
+        Decode YOLOX predictions and apply NMS.
+        Matches Autoware generateYoloxProposals + decodeOutputs logic.
+        The ONNX model outputs decoded [cx, cy, w, h, obj_conf, cls_conf...] per anchor.
+        """
         if len(predictions.shape) == 3:
             predictions = predictions[0]
 
-        # Extract confidence scores
+        # Extract confidence scores (Autoware: box_objectness * box_cls_score)
         obj_conf = predictions[:, 4]
         class_conf = predictions[:, 5:]
         class_ids = np.argmax(class_conf, axis=1)
@@ -242,18 +244,19 @@ class YOLOXDetector:
         scores = scores[mask]
         class_ids = class_ids[mask]
 
-        # Convert [center_x, center_y, w, h] to [x1, y1, x2, y2] centered unpadded coordinates
-        x1 = (boxes[:, 0] - boxes[:, 2] / 2.0 - dw) / ratio
-        y1 = (boxes[:, 1] - boxes[:, 3] / 2.0 - dh) / ratio
-        x2 = (boxes[:, 0] + boxes[:, 2] / 2.0 - dw) / ratio
-        y2 = (boxes[:, 1] + boxes[:, 3] / 2.0 - dh) / ratio
+        # Convert [x_center, y_center, w, h] to [x1, y1, x2, y2]
+        # Then scale back to original image coords (top-left padding: just divide by ratio)
+        x1 = (boxes[:, 0] - boxes[:, 2] / 2.0) / ratio
+        y1 = (boxes[:, 1] - boxes[:, 3] / 2.0) / ratio
+        x2 = (boxes[:, 0] + boxes[:, 2] / 2.0) / ratio
+        y2 = (boxes[:, 1] + boxes[:, 3] / 2.0) / ratio
 
         # Clip to original image boundaries
         h, w = orig_shape[:2]
-        x1 = np.clip(x1, 0, w)
-        y1 = np.clip(y1, 0, h)
-        x2 = np.clip(x2, 0, w)
-        y2 = np.clip(y2, 0, h)
+        x1 = np.clip(x1, 0, w - 1)
+        y1 = np.clip(y1, 0, h - 1)
+        x2 = np.clip(x2, 0, w - 1)
+        y2 = np.clip(y2, 0, h - 1)
 
         final_boxes = np.stack([x1, y1, x2, y2], axis=1)
 
