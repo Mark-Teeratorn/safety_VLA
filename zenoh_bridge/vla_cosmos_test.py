@@ -310,23 +310,22 @@ class VLACosmosAssistedReasoner:
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
-        # 1. Open-World 2D Visual Grounding on Road Plane (excluding interior dashboard)
+        # 1. Open-World Visual Saliency Inspection on raw_frame_bgr
         h, w = raw_frame_bgr.shape[:2]
         
-        # Vehicle Forward Driving Road Plane ROI (middle 60% width, road horizon 35% to 72% height)
-        # Excludes top sky/bridges (y < 0.35) and bottom vehicle dashboard/wipers (y > 0.72)
-        roi_x1, roi_x2 = int(w * 0.20), int(w * 0.80)
-        roi_y1, roi_y2 = int(h * 0.35), int(h * 0.72)
+        # Central driving trajectory region (middle 70% width, lower 65% height)
+        roi_x1, roi_x2 = int(w * 0.15), int(w * 0.85)
+        roi_y1, roi_y2 = int(h * 0.25), int(h * 0.95)
         roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
         
-        # Calculate visual contrast & gradient saliency
+        # Calculate visual contrast & gradient saliency (detects dogs, phones, objects held in front of camera)
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
         magnitude = cv2.magnitude(grad_x, grad_y)
         
         # Threshold high-saliency visual regions
-        _, saliency_mask = cv2.threshold(magnitude.astype(np.uint8), 45, 255, cv2.THRESH_BINARY)
+        _, saliency_mask = cv2.threshold(magnitude.astype(np.uint8), 35, 255, cv2.THRESH_BINARY)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
         saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_CLOSE, kernel)
         
@@ -335,30 +334,36 @@ class VLACosmosAssistedReasoner:
         novel_visual_obstacles = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            bx, by, bw, bh = cv2.boundingRect(cnt)
-            # Require minimum obstacle size (area > 3000 and height > 25px) on road plane
-            if area > 3000 and bh > 25:
-                abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
-                abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
+            if area > 2000:
+                bx, by, bw, bh = cv2.boundingRect(cnt)
+                aspect_ratio = float(bw) / float(bh) if bh > 0 else 0
                 
-                # Check overlap with existing YOLO bounding hints
-                overlaps_yolo = False
-                for yh in yolo_hints:
-                    yx1, yy1, yx2, yy2 = yh["bbox"]
-                    if not (abs_x2 < yx1 or abs_x1 > yx2 or abs_y2 < yy1 or abs_y1 > yy2):
-                        overlaps_yolo = True
-                        break
+                # Filter out long, thin road lane markings / lines (lane lines have high aspect ratio > 3.0 or < 0.25)
+                is_lane_line = (aspect_ratio > 3.2 or aspect_ratio < 0.25 or bw < 18 or bh < 18)
                 
-                if not overlaps_yolo:
-                    norm_area = (bw * bh) / float(w * h)
-                    novel_visual_obstacles.append({
-                        "label": "DANGER VLA WARNING",
-                        "confidence": 0.89,
-                        "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
-                        "norm_area": norm_area,
-                        "is_novel": True,
-                        "source": "VLA 2D Visual Grounding"
-                    })
+                # Ignore lane lines and lower dashboard windshield area
+                if not is_lane_line and (by + bh) < (roi.shape[0] * 0.88):
+                    abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
+                    abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
+                    
+                    # Check overlap with existing YOLO hints
+                    overlaps_yolo = False
+                    for yh in yolo_hints:
+                        yx1, yy1, yx2, yy2 = yh["bbox"]
+                        if not (abs_x2 < yx1 or abs_x1 > yx2 or abs_y2 < yy1 or abs_y1 > yy2):
+                            overlaps_yolo = True
+                            break
+                    
+                    if not overlaps_yolo:
+                        norm_area = (bw * bh) / float(w * h)
+                        novel_visual_obstacles.append({
+                            "label": "DANGER VLA WARNING",
+                            "confidence": 0.89,
+                            "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
+                            "norm_area": norm_area,
+                            "is_novel": True,
+                            "source": "VLA 2D Visual Grounding"
+                        })
 
         # Combine YOLO hints with Open-World Visual Obstacles
         all_threats = []
