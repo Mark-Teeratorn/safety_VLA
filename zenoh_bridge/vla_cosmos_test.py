@@ -351,7 +351,8 @@ class VLACosmosAssistedReasoner:
                         "confidence": 0.89,
                         "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
                         "norm_area": norm_area,
-                        "is_novel": True
+                        "is_novel": True,
+                        "source": "VLA 2D Visual Grounding"
                     })
 
         # Combine YOLO hints with Open-World Visual Obstacles
@@ -519,14 +520,14 @@ class VLACosmosTestSimulation:
             cv2.putText(img, f"YOLO Hint: {lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
 
-        # 2. Draw Novel Open-World Visual Obstacles (RED Boxes for DANGER VLA WARNING)
+        # 2. Draw Novel Open-World Visual Obstacles (RED Boxes from VLA 2D Visual Grounding)
         novel_obstacles = vla_cmd.get("novel_obstacles", [])
         for nvo in novel_obstacles:
             x1, y1, x2, y2 = [int(v) for v in nvo["bbox"]]
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
-            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + 250, max(y1, 25)), (0, 0, 255), -1)
-            cv2.putText(img, "DANGER VLA WARNING", (x1 + 6, max(y1 - 7, 18)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2)
+            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + 330, max(y1, 25)), (0, 0, 255), -1)
+            cv2.putText(img, "DANGER VLA WARNING (VLA 2D Grounding)", (x1 + 6, max(y1 - 7, 18)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 2)
 
         # Top HUD Banner Background (Height = 70px)
         h, w = img.shape[:2]
