@@ -200,10 +200,10 @@ class YOLOXDetector:
 
         if self.backend in ["ort", "trt_engine"]:
             blob = img_padded.transpose((2, 0, 1))[::-1]  # BGR to RGB (Autoware standard)
-            blob = np.ascontiguousarray(blob, dtype=np.float32)
+            blob = np.ascontiguousarray(blob, dtype=np.float32) / 255.0  # Normalize to [0.0, 1.0]
             blob = np.expand_dims(blob, axis=0)
         else:
-            blob = cv2.dnn.blobFromImage(img_padded, scalefactor=1.0, size=(self.input_w, self.input_h), swapRB=True)
+            blob = cv2.dnn.blobFromImage(img_padded, scalefactor=1.0 / 255.0, size=(self.input_w, self.input_h), swapRB=True)
 
         return blob, r, (dw, dh)
 
