@@ -52,7 +52,7 @@ CLASS_NAMES = [
 
 
 class YOLOXDetector:
-    """Standalone YOLOX Inference Engine using ONNXRuntime or OpenCV DNN (CUDA)."""
+    """Standalone YOLOX Inference Engine using TensorRT / ONNXRuntime GPU / OpenCV DNN."""
 
     def __init__(self, model_path: str, conf_thresh: float = 0.3, nms_thresh: float = 0.45, input_size: tuple = (640, 640)):
         self.conf_thresh = conf_thresh
@@ -60,10 +60,11 @@ class YOLOXDetector:
         self.input_w, self.input_h = input_size
         self.backend = None
 
-        if _HAS_ORT:
+        # 1. Try ONNXRuntime with TensorRT / CUDA
+        if _HAS_ORT and model_path.endswith('.onnx'):
             try:
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-                print(f"[YOLOX] Loading model with ONNXRuntime: {model_path}")
+                providers = ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+                print(f"[YOLOX] Loading model with ONNXRuntime GPU/TensorRT: {model_path}")
                 self.session = ort.InferenceSession(model_path, providers=providers)
                 model_inputs = self.session.get_inputs()
                 self.input_name = model_inputs[0].name
@@ -71,11 +72,12 @@ class YOLOXDetector:
                 if isinstance(shape[2], int) and isinstance(shape[3], int):
                     self.input_h, self.input_w = shape[2], shape[3]
                 self.backend = "ort"
-                print(f"[YOLOX] ONNXRuntime backend ready ({self.input_w}x{self.input_h})")
+                print(f"[YOLOX] ONNXRuntime GPU backend ready ({self.input_w}x{self.input_h})")
             except Exception as e:
-                print(f"[YOLOX] ONNXRuntime init failed ({e}), falling back to OpenCV DNN...")
+                print(f"[YOLOX] ONNXRuntime init notice: {e}")
 
-        if self.backend is None:
+        # 2. Try OpenCV DNN
+        if self.backend is None and model_path.endswith('.onnx'):
             print(f"[YOLOX] Loading model with OpenCV DNN: {model_path}")
             self.net = cv2.dnn.readNetFromONNX(model_path)
             try:
