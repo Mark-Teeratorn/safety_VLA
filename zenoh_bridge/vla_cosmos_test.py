@@ -310,22 +310,23 @@ class VLACosmosAssistedReasoner:
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
-        # 1. Open-World Visual Saliency Inspection on raw_frame_bgr
+        # 1. Open-World 2D Visual Grounding on Road Plane (excluding interior dashboard)
         h, w = raw_frame_bgr.shape[:2]
         
-        # Central driving trajectory region (middle 70% width, lower 65% height)
-        roi_x1, roi_x2 = int(w * 0.15), int(w * 0.85)
-        roi_y1, roi_y2 = int(h * 0.25), int(h * 0.95)
+        # Vehicle Forward Driving Road Plane ROI (middle 60% width, road horizon 35% to 72% height)
+        # Excludes top sky/bridges (y < 0.35) and bottom vehicle dashboard/wipers (y > 0.72)
+        roi_x1, roi_x2 = int(w * 0.20), int(w * 0.80)
+        roi_y1, roi_y2 = int(h * 0.35), int(h * 0.72)
         roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
         
-        # Calculate visual contrast & gradient saliency (detects dogs, phones, objects held in front of camera)
+        # Calculate visual contrast & gradient saliency
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
         grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
         magnitude = cv2.magnitude(grad_x, grad_y)
         
         # Threshold high-saliency visual regions
-        _, saliency_mask = cv2.threshold(magnitude.astype(np.uint8), 35, 255, cv2.THRESH_BINARY)
+        _, saliency_mask = cv2.threshold(magnitude.astype(np.uint8), 45, 255, cv2.THRESH_BINARY)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
         saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_CLOSE, kernel)
         
@@ -334,8 +335,9 @@ class VLACosmosAssistedReasoner:
         novel_visual_obstacles = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area > 2500:  # Significant visual object (phone, dog, animal, debris)
-                bx, by, bw, bh = cv2.boundingRect(cnt)
+            bx, by, bw, bh = cv2.boundingRect(cnt)
+            # Require minimum obstacle size (area > 3000 and height > 25px) on road plane
+            if area > 3000 and bh > 25:
                 abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
                 abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
                 
