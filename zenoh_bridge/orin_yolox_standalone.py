@@ -99,6 +99,8 @@ class TensorRTEngine:
                 self.output_shape = shape
                 self.output_size = size
                 self.output_dtype = dtype
+                self.output_host = np.empty(shape, dtype=dtype)
+
         # Create a dedicated CUDA stream for asynchronous execution
         self.stream = ctypes.c_void_p()
         self.cudart.cudaStreamCreate(ctypes.byref(self.stream))
