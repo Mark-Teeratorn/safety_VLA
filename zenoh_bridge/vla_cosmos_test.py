@@ -287,24 +287,21 @@ class VLACosmosAssistedReasoner:
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs explicit dual-image VLA cognitive prompt comparing Raw RGB & YOLO Annotated frames."""
+        """Constructs ultra-compact, token-efficient dual-image VLA prompt (~45 tokens)."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
-            hint_lines.append(f"  Candidate {i}: {d['label']} | bbox: {d['bbox']} | conf: {d['confidence']:.2f}")
+            box = [int(v) for v in d['bbox']]
+            hint_lines.append(f"- Candidate {i}: {d['label']} {box} ({d['confidence']:.2f})")
 
-        hints_str = "\n".join(hint_lines) if hint_lines else "  None (No candidate objects flagged by YOLO)"
+        hints_str = "\n".join(hint_lines) if hint_lines else "- None"
 
         return (
-            f"[SYSTEM ROLE]: You are Cosmos-VLA, an Autonomous Vehicle Vision-Language Safety Reasoning Model.\n"
-            f"[INPUT 1]: Image 1 — Raw RGB Camera View (unimpaired original frame for long-tail hazard visual inspection).\n"
-            f"[INPUT 2]: Image 2 — YOLO Spatial Annotation View (contains 2D candidate bounding box overlays).\n\n"
-            f"[YOLO SPATIAL ANNOTATION HINTS]:\n{hints_str}\n\n"
-            f"[COGNITIVE REASONING INSTRUCTIONS]:\n"
-            f"1. Compare Image 1 (Raw View) and Image 2 (YOLO Overlay View).\n"
-            f"2. Inspect Image 1 for novel or long-tail hazards (e.g. dogs, animals, fallen debris, boxes, strollers) "
-            f"that YOLO missed or left unclassified.\n"
-            f"3. Evaluate collision risk level (CRITICAL / WARNING / SAFE).\n"
-            f"4. Output recommended target speed (m/s), emergency brake trigger, and detailed safety explanation."
+            f"[VLA Safety Brain]\n"
+            f"Inputs: Img1=Raw RGB | Img2=YOLO Overlay\n"
+            f"YOLO Hints:\n{hints_str}\n\n"
+            f"Task:\n"
+            f"1. Inspect Img1 for novel/long-tail hazards missed by YOLO.\n"
+            f"2. Output Risk (CRITICAL/WARNING/SAFE), Speed (m/s), Brake (True/False), Reason."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
