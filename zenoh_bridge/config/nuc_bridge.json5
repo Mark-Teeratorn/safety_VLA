@@ -1,0 +1,30 @@
+{
+  // ============================================================
+  // Zenoh Bridge Config — INTEL NUC
+  // Role: PEER — connects to Orin router, receives VLA commands
+  // Run: zenoh-bridge-ros2dds --config config/nuc_bridge.json5
+  // ============================================================
+
+  mode: "peer",
+
+  connect: {
+    endpoints: ["tcp/192.168.1.20:7447"]
+  },
+
+  plugins: {
+    ros2dds: {
+      ros2_namespace: "",
+      ros2_domain_id: 0,
+
+      // Receive VLA output from Orin → publish to local ROS2 on NUC
+      // Update topic names once VLA output is confirmed
+      sub_topics: [
+        "/vla/deceleration_cmd",
+        "/vla/brake_cmd",
+        "/vla/safety_status"
+      ],
+
+      pub_topics: []
+    }
+  }
+}

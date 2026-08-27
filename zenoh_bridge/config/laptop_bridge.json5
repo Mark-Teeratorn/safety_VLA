@@ -1,0 +1,37 @@
+{
+  // ============================================================
+  // Zenoh Bridge Config — LAPTOP
+  // ROS2: Humble | Ubuntu 22.04
+  // Role: PEER — connects to Orin router, publishes 3 topics
+  // Run: zenoh-bridge-ros2dds --config config/laptop_bridge.json5
+  // ============================================================
+
+  mode: "peer",
+
+  connect: {
+    endpoints: ["tcp/192.168.1.20:7447"]
+  },
+
+  plugins: {
+    ros2dds: {
+      ros2_namespace: "",
+      ros2_domain_id: 0,
+
+      // Topics to forward Laptop → Zenoh → Orin
+      pub_topics: [
+        "/localization/kinematic_state",
+        "/perception/object_recognition/detection/tensorrt_yolox_node/out/image",
+        "/sensing/camera/camera0/image_raw/compressed"
+      ],
+
+      // Throttle image topics to 15 Hz to save Ethernet bandwidth
+      // (source is 720p JPEG — ~20-40 Mbps at 30Hz, ~10-20 Mbps at 15Hz)
+      pub_max_frequencies: [
+        { ke: "ros2/perception/object_recognition/detection/tensorrt_yolox_node/out/image", max_hz: 15.0 },
+        { ke: "ros2/sensing/camera/camera0/image_raw/compressed", max_hz: 15.0 }
+      ],
+
+      sub_topics: []
+    }
+  }
+}
