@@ -287,7 +287,7 @@ class VLACosmosAssistedReasoner:
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs explicit VLM prompt forcing visual scanning of novel/unlabelled hazards (dogs, debris)."""
+        """Constructs explicit Chain-of-Thought (CoT) VLA prompt requiring step-by-step cognitive reasoning."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
             box = [int(v) for v in d['bbox']]
@@ -299,10 +299,11 @@ class VLACosmosAssistedReasoner:
             f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Safety Brain.\n\n"
             f"[INPUTS]: Image 1 = Raw RGB Camera View | Image 2 = YOLO Overlay View\n"
             f"[YOLO HINTS]:\n{hints_str}\n\n"
-            f"[EXPLICIT NOVEL HAZARD INSTRUCTIONS]:\n"
-            f"1. SCAN IMAGE 1 ROAD SURFACE: Look for ANY physical object on the road in the vehicle path (e.g. dogs, animals, boxes, debris, strollers) that has NO YOLO box in Image 2.\n"
-            f"2. EVALUATE COLLISION THREAT: Assess if any unlabelled novel obstacle or YOLO target blocks the vehicle trajectory.\n"
-            f"3. DECISION OUTPUT: Output Risk (CRITICAL/WARNING/SAFE), Target Speed (m/s), Emergency Brake (True/False), and Visual Reason."
+            f"[CHAIN-OF-THOUGHT (CoT) INSTRUCTIONS]:\n"
+            f"Step 1 [Visual Grounding]: Compare Image 1 (Raw) & Image 2 (YOLO). Scan driving floor for unlabelled hazards (DANGER VLA WARNING).\n"
+            f"Step 2 [Threat Analysis]: Evaluate trajectory occupancy, proximity, and vulnerability.\n"
+            f"Step 3 [Risk Rating]: Rate overall collision risk (CRITICAL / WARNING / SAFE).\n"
+            f"Step 4 [Control Output]: Output recommended Target Speed (m/s), Emergency Brake (True/False), and full CoT Explanation."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
@@ -382,7 +383,7 @@ class VLACosmosAssistedReasoner:
 
         if not all_threats:
             self.risk_level = "SAFE"
-            self.last_decision = "Path Clear. Cruising safely."
+            self.last_decision = "[CoT Reasoning]: 1. Grounding: Trajectory clear. 2. Analysis: No obstacles. 3. Risk: Low. 4. Decision: MAINTAIN CRUISING SPEED."
             return {
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
@@ -397,7 +398,12 @@ class VLACosmosAssistedReasoner:
         if top["score"] > 0.08:
             self.risk_level = "CRITICAL"
             tag_name = top["label"]
-            self.last_decision = f"EMERGENCY BRAKE: [{tag_name}] detected in trajectory!"
+            self.last_decision = (
+                f"[CoT Reasoning]: 1. Grounding: Visual hazard [{tag_name}] spotted in Img1. "
+                f"2. Analysis: Directly blocking forward trajectory corridor. "
+                f"3. Risk Rating: CRITICAL collision threat. "
+                f"4. Action: EMERGENCY BRAKE (0.0 m/s)!"
+            )
             return {
                 "target_speed": 0.0,
                 "emergency_brake": True,
@@ -409,7 +415,12 @@ class VLACosmosAssistedReasoner:
             self.risk_level = "WARNING"
             speed = max(0.5, self.cruise_speed * 0.4)
             tag_name = top["label"]
-            self.last_decision = f"SLOW DOWN: Approaching [{tag_name}] ({speed:.1f} m/s)"
+            self.last_decision = (
+                f"[CoT Reasoning]: 1. Grounding: Target [{tag_name}] observed ahead. "
+                f"2. Analysis: Medium proximity in path. "
+                f"3. Risk Rating: WARNING level. "
+                f"4. Action: SLOW DOWN ({speed:.1f} m/s)."
+            )
             return {
                 "target_speed": speed,
                 "emergency_brake": False,
@@ -420,7 +431,12 @@ class VLACosmosAssistedReasoner:
         else:
             self.risk_level = "SAFE"
             tag_name = top["label"]
-            self.last_decision = f"TRACKING: [{tag_name}] at safe distance."
+            self.last_decision = (
+                f"[CoT Reasoning]: 1. Grounding: [{tag_name}] detected at periphery. "
+                f"2. Analysis: Outside vehicle clearance boundary. "
+                f"3. Risk Rating: SAFE. "
+                f"4. Action: TRACKING & CRUISING ({self.cruise_speed:.1f} m/s)."
+            )
             return {
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
