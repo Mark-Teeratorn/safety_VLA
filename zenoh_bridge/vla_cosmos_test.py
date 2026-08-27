@@ -310,28 +310,50 @@ class VLACosmosAssistedReasoner:
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
-        # Process YOLO Spatial Hints directly for VLA Cognitive Safety Reasoning
-        all_threats = []
+        h, w = raw_frame_bgr.shape[:2]
+        frame_area = float(w * h)
+        ego_lane_x1, ego_lane_x2 = int(w * 0.30), int(w * 0.70)
         
+        all_threats = []
         for det in yolo_hints:
             lbl = det["label"]
             conf = det["confidence"]
             x1, y1, x2, y2 = det["bbox"]
-            area = max(0, x2 - x1) * max(0, y2 - y1)
-            norm_area = area / (640.0 * 480.0)
-            mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD"] else 1.0
+            
+            box_w = max(0, x2 - x1)
+            box_h = max(0, y2 - y1)
+            area = box_w * box_h
+            norm_area = area / frame_area
+            
+            # Center coordinates of candidate box
+            cx = (x1 + x2) / 2.0
+            
+            # Vulnerability multiplier for high-risk road users
+            vulnerability_mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD", "DANGER VLA WARNING"] else 1.0
+            
+            # Trajectory corridor multiplier (ego lane = 1.0, adjacent lane = 0.25)
+            in_ego_lane = (ego_lane_x1 <= cx <= ego_lane_x2)
+            lane_mult = 1.0 if in_ego_lane else 0.25
+            
+            # Proximity weighting based on vertical position in frame (closer objects are lower in frame y2)
+            y_proximity = (y2 / float(h))
+            
+            threat_score = norm_area * vulnerability_mult * lane_mult * conf * (y_proximity ** 2)
+            
             all_threats.append({
                 "label": lbl,
-                "score": norm_area * mult * conf,
+                "score": threat_score,
                 "confidence": conf,
-                "bbox": det["bbox"]
+                "bbox": det["bbox"],
+                "in_ego_lane": in_ego_lane,
+                "norm_area": norm_area
             })
 
         vla_prompt = self.construct_vla_prompt(all_threats)
 
         if not all_threats:
             self.risk_level = "SAFE"
-            self.last_decision = "[CoT Reasoning]: 1. Visual Scene: Trajectory clear. 2. Analysis: No obstacles. 3. Risk: Low. 4. Decision: MAINTAIN CRUISING SPEED."
+            self.last_decision = "[CoT Reasoning]: 1. Trajectory: Clear corridor. 2. Threat: Zero targets in lane. 3. Risk: SAFE. 4. Control: MAINTAIN CRUISING SPEED (3.0 m/s)."
             return {
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
@@ -343,13 +365,14 @@ class VLACosmosAssistedReasoner:
         all_threats.sort(key=lambda t: t["score"], reverse=True)
         top = all_threats[0]
 
-        if top["score"] > 0.08:
+        # Adaptive Risk Categorization: CRITICAL requires high score AND target in ego-lane corridor
+        if top["score"] > 0.15 and top["in_ego_lane"]:
             self.risk_level = "CRITICAL"
             tag_name = top["label"]
             self.last_decision = (
-                f"[CoT Reasoning]: 1. Visual Scene: Target [{tag_name}] spotted ahead. "
-                f"2. Threat: Directly blocking forward trajectory corridor. "
-                f"3. Risk Rating: CRITICAL collision threat. "
+                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] directly blocking ego-lane. "
+                f"2. Collision Proximity: Imminent threat (area={top['norm_area']*100:.1f}%). "
+                f"3. Risk Rating: CRITICAL. "
                 f"4. Action: EMERGENCY BRAKE (0.0 m/s)!"
             )
             return {
@@ -359,15 +382,16 @@ class VLACosmosAssistedReasoner:
                 "vla_prompt": vla_prompt,
                 "novel_obstacles": []
             }
-        elif top["score"] > 0.03:
+        elif top["score"] > 0.04:
             self.risk_level = "WARNING"
-            speed = max(0.5, self.cruise_speed * 0.4)
+            speed = max(1.0, self.cruise_speed * 0.5)
             tag_name = top["label"]
+            location_str = "in ego-lane" if top["in_ego_lane"] else "in adjacent lane"
             self.last_decision = (
-                f"[CoT Reasoning]: 1. Visual Scene: Target [{tag_name}] observed ahead. "
-                f"2. Threat: Medium proximity in path. "
-                f"3. Risk Rating: WARNING level. "
-                f"4. Action: SLOW DOWN ({speed:.1f} m/s)."
+                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] observed {location_str}. "
+                f"2. Collision Proximity: Moderate distance. "
+                f"3. Risk Rating: WARNING. "
+                f"4. Action: ADAPTIVE SLOW DOWN ({speed:.1f} m/s)."
             )
             return {
                 "target_speed": speed,
@@ -380,10 +404,10 @@ class VLACosmosAssistedReasoner:
             self.risk_level = "SAFE"
             tag_name = top["label"]
             self.last_decision = (
-                f"[CoT Reasoning]: 1. Visual Scene: [{tag_name}] detected at periphery. "
-                f"2. Threat: Outside vehicle clearance boundary. "
+                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] detected at peripheral safe zone. "
+                f"2. Collision Proximity: No lane intrusion. "
                 f"3. Risk Rating: SAFE. "
-                f"4. Action: TRACKING & CRUISING ({self.cruise_speed:.1f} m/s)."
+                f"4. Action: CRUISING ({self.cruise_speed:.1f} m/s)."
             )
             return {
                 "target_speed": self.cruise_speed,
