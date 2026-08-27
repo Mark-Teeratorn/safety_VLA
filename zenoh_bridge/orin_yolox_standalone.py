@@ -44,16 +44,16 @@ KEY_KINEMATIC = "aimslab/laptop/localization/kinematic_state"
 KEY_PERCEPTION = "aimslab/orin/perception/objects"
 KEY_CONTROL = "aimslab/orin/control_cmd"
 
-# Autoware YOLOX-sPlus Official Label Order (verified from Autoware perception label.txt)
+# Empirically verified Autoware yolox-sPlus model class index mapping
 CLASS_NAMES = [
-    "CAR",         # Index 0
-    "PEDESTRIAN",  # Index 1
-    "BUS",         # Index 2
-    "TRUCK",       # Index 3
+    "UNKNOWN",     # Index 0
+    "CAR",         # Index 1
+    "TRUCK",       # Index 2
+    "BUS",         # Index 3
     "BICYCLE",     # Index 4
-    "MOTORBIKE",   # Index 5
-    "TRAILER",     # Index 6
-    "UNKNOWN"      # Index 7
+    "MOTORCYCLE",  # Index 5
+    "PEDESTRIAN",  # Index 6
+    "TRAILER"      # Index 7
 ]
 try:
     import tensorrt as trt
