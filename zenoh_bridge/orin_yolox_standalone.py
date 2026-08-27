@@ -44,10 +44,9 @@ KEY_KINEMATIC = "aimslab/laptop/localization/kinematic_state"
 KEY_PERCEPTION = "aimslab/orin/perception/objects"
 KEY_CONTROL = "aimslab/orin/control_cmd"
 
-# Autoware / COCO class labels for YOLOX
+# Autoware YOLOX-sPlus class labels (must match label.txt used during training)
 CLASS_NAMES = [
-    "car", "truck", "bus", "pedestrian", "cyclist",
-    "motorcycle", "trailer", "obstacle"
+    "CAR", "TRUCK", "BUS", "BICYCLE", "PEDESTRIAN", "MOTORBIKE"
 ]
 try:
     import tensorrt as trt
