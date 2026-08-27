@@ -290,15 +290,21 @@ def main():
 
                 cv2.putText(frame_bgr, f"FPS: {1000/max(inf_time,1):.1f} ({inf_time:.1f}ms)",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                cv2.imshow("Orin Standalone YOLOX Perception", frame_bgr)
-
-                if cv2.waitKey(1) == ord('q'):
-                    break
+                try:
+                    cv2.imshow("Orin Standalone YOLOX Perception", frame_bgr)
+                    if cv2.waitKey(1) == ord('q'):
+                        break
+                except Exception as e:
+                    print(f"[OrinPipeline] Headless display mode (no GUI window): {e}")
+                    args.demo = False  # Disable GUI mode to prevent loop errors
     except KeyboardInterrupt:
         pass
     finally:
         rs_pipeline.stop()
-        cv2.destroyAllWindows()
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
         pipeline.stop()
 
 
