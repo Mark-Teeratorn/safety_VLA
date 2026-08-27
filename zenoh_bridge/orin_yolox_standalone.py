@@ -53,7 +53,7 @@ CLASS_NAMES = [
     "BICYCLE",     # Index 4
     "MOTORCYCLE",  # Index 5
     "PEDESTRIAN",  # Index 6
-    "TRAILER"      # Index 7
+    "UNKNOWN"      # Index 7
 ]
 try:
     import tensorrt as trt
