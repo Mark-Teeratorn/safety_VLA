@@ -483,6 +483,14 @@ class VLACosmosTestSimulation:
         # Run Primary VLA Multimodal Safety Reasoning
         vla_cmd = self.vla_engine.evaluate(frame_bgr, yolo_hints)
 
+        # Print VLA Chain-of-Thought (CoT) Reasoning to Terminal
+        reason = vla_cmd.get("reason", "")
+        risk = self.vla_engine.risk_level
+        print(f"\n[VLA COGNITIVE THINKING | Status: {risk}]")
+        print(f"  🧠 Prompt: {vla_cmd.get('vla_prompt', '').replace(chr(10), ' ')}")
+        print(f"  💭 Thought: {reason}")
+        print(f"  ⚡ Action: Speed={vla_cmd['target_speed']} m/s | EmergencyBrake={vla_cmd['emergency_brake']}")
+
         # Publish Perception & Control over Zenoh
         if hasattr(self, 'pub_perception'):
             self.pub_perception.put(json.dumps({
