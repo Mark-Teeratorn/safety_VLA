@@ -300,46 +300,124 @@ class VLACosmosAssistedReasoner:
     def evaluate(self, frame_bgr: np.ndarray, yolo_hints: list) -> dict:
         vla_prompt = self.construct_vla_prompt(yolo_hints)
 
-        if not yolo_hints:
-            self.risk_level = "SAFE"
-            self.last_decision = "Path Clear. Cruising safely."
-            return {
-                "target_speed": self.cruise_speed,
-                "emergency_brake": False,
-                "reason": self.last_decision,
-                "vla_prompt": vla_prompt
-            }
+        # 1. Analyze Full Visual Image for Unlabelled / Long-Tail Hazards (Dogs, Animals, Debris)
+        h, w = frame_bgr.shape[:2]
+        
+        # Vehicle Forward Driving Corridor ROI (central lane zone: 20%-80% width, 40%-95% height)
+        roi_x1, roi_x2 = int(w * 0.20), int(w * 0.80)
+        roi_y1, roi_y2 = int(h * 0.40), int(h * 0.95)
+        corridor = frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
+        
+        # Calculate visual saliency / anomaly intensity in the driving corridor
+        gray = cv2.cvtColor(corridor, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (7, 7), 0)
+        _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Find foreground contours in trajectory corridor
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        unlabelled_hazards = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 1200:  # Significant foreground obstacle size (dog, animal, box, debris)
+                bx, by, bw, bh = cv2.boundingRect(cnt)
+                
+                # Check if this contour overlaps with any existing YOLO hint
+                abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
+                abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
+                
+                overlaps_yolo = False
+                for yh in yolo_hints:
+                    yx1, yy1, yx2, yy2 = yh["bbox"]
+                    if not (abs_x2 < yx1 or abs_x1 > yx2 or abs_y2 < yy1 or abs_y1 > yy2):
+                        overlaps_yolo = True
+                        break
+                
+                if not overlaps_yolo:
+                    norm_area = (bw * bh) / float(w * h)
+                    unlabelled_hazards.append({
+                        "label": "LONG-TAIL HAZARD (Dog/Animal/Debris)",
+                        "confidence": 0.85,
+                        "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
+                        "norm_area": norm_area,
+                        "is_unlabelled": True
+                    })
 
-        # Evaluate target threat proximity & vulnerability
-        threats = []
+        # Combine YOLO hints with unlabelled visual hazards
+        all_threats = []
+        
         for det in yolo_hints:
             lbl = det["label"]
             conf = det["confidence"]
             x1, y1, x2, y2 = det["bbox"]
             area = max(0, x2 - x1) * max(0, y2 - y1)
             norm_area = area / (640.0 * 480.0)
-
             mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else 1.0
-            risk_score = norm_area * mult * conf
+            all_threats.append({
+                "label": lbl,
+                "score": norm_area * mult * conf,
+                "bbox": det["bbox"],
+                "confidence": conf,
+                "is_unlabelled": False
+            })
 
-            threats.append({"label": lbl, "score": risk_score, "conf": conf})
+        for haz in unlabelled_hazards:
+            all_threats.append({
+                "label": haz["label"],
+                "score": haz["norm_area"] * 2.2,  # High priority for unlabelled trajectory hazards
+                "bbox": haz["bbox"],
+                "confidence": haz["confidence"],
+                "is_unlabelled": True
+            })
 
-        threats.sort(key=lambda t: t["score"], reverse=True)
-        top = threats[0]
+        if not all_threats:
+            self.risk_level = "SAFE"
+            self.last_decision = "Path Clear. Cruising safely."
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt,
+                "unlabelled_hazards": []
+            }
 
-        if top["score"] > 0.20:
+        all_threats.sort(key=lambda t: t["score"], reverse=True)
+        top = all_threats[0]
+
+        if top["score"] > 0.15:
             self.risk_level = "CRITICAL"
-            self.last_decision = f"EMERGENCY BRAKE: {top['label']} dangerously close!"
-            return {"target_speed": 0.0, "emergency_brake": True, "reason": self.last_decision, "vla_prompt": vla_prompt}
-        elif top["score"] > 0.08:
+            tag_name = top["label"]
+            self.last_decision = f"EMERGENCY BRAKE: [{tag_name}] in trajectory!"
+            return {
+                "target_speed": 0.0,
+                "emergency_brake": True,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt,
+                "unlabelled_hazards": unlabelled_hazards
+            }
+        elif top["score"] > 0.05:
             self.risk_level = "WARNING"
             speed = max(0.5, self.cruise_speed * 0.4)
-            self.last_decision = f"SLOW DOWN: Approaching {top['label']} ({speed:.1f} m/s)"
-            return {"target_speed": speed, "emergency_brake": False, "reason": self.last_decision, "vla_prompt": vla_prompt}
+            tag_name = top["label"]
+            self.last_decision = f"SLOW DOWN: Approaching [{tag_name}] ({speed:.1f} m/s)"
+            return {
+                "target_speed": speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt,
+                "unlabelled_hazards": unlabelled_hazards
+            }
         else:
             self.risk_level = "SAFE"
-            self.last_decision = f"TRACKING: {top['label']} at safe distance."
-            return {"target_speed": self.cruise_speed, "emergency_brake": False, "reason": self.last_decision, "vla_prompt": vla_prompt}
+            tag_name = top["label"]
+            self.last_decision = f"TRACKING: [{tag_name}] at safe distance."
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt,
+                "unlabelled_hazards": unlabelled_hazards
+            }
 
 
 class VLACosmosTestSimulation:
@@ -398,7 +476,7 @@ class VLACosmosTestSimulation:
         return frame_bgr
 
     def _overlay_vla_hud(self, img: np.ndarray, yolo_hints: list, vla_cmd: dict, inf_ms: float):
-        # Draw YOLO Assistance Box Proposals
+        # Draw YOLO Assistance Box Proposals (Green for vehicles, Yellow for pedestrians)
         for det in yolo_hints:
             x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
             lbl = det["label"]
@@ -408,6 +486,16 @@ class VLACosmosTestSimulation:
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             cv2.putText(img, f"YOLO Hint: {lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
+
+        # Draw Unlabelled Long-Tail Hazards (RED Bounding Boxes for Dogs, Animals, Debris)
+        unlabelled_list = vla_cmd.get("unlabelled_hazards", [])
+        for haz in unlabelled_list:
+            x1, y1, x2, y2 = [int(v) for v in haz["bbox"]]
+            lbl = haz["label"]
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.rectangle(img, (x1, max(y1 - 25, 0)), (x1 + len(lbl) * 9, max(y1, 25)), (0, 0, 255), -1)
+            cv2.putText(img, f"VLA HAZARD: {lbl}", (x1 + 4, max(y1 - 7, 18)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2)
 
         # Top HUD Banner Background (Height = 70px)
         h, w = img.shape[:2]
