@@ -44,14 +44,14 @@ KEY_KINEMATIC = "aimslab/laptop/localization/kinematic_state"
 KEY_PERCEPTION = "aimslab/orin/perception/objects"
 KEY_CONTROL = "aimslab/orin/control_cmd"
 
-# Autoware YOLOX Official 8-Class Labels (TIER IV / Autoware Universe)
+# Autoware YOLOX-sPlus Official Label Order (verified from Autoware perception label.txt)
 CLASS_NAMES = [
     "CAR",         # Index 0
-    "TRUCK",       # Index 1
+    "PEDESTRIAN",  # Index 1
     "BUS",         # Index 2
-    "BICYCLE",     # Index 3
-    "MOTORBIKE",   # Index 4
-    "PEDESTRIAN",  # Index 5
+    "TRUCK",       # Index 3
+    "BICYCLE",     # Index 4
+    "MOTORBIKE",   # Index 5
     "TRAILER",     # Index 6
     "UNKNOWN"      # Index 7
 ]
@@ -133,7 +133,7 @@ class TensorRTEngine:
 class YOLOXDetector:
     """Standalone YOLOX Inference Engine using TensorRT Engine / ONNXRuntime GPU / OpenCV DNN."""
 
-    def __init__(self, model_path: str, conf_thresh: float = 0.3, nms_thresh: float = 0.45, input_size: tuple = (640, 640)):
+    def __init__(self, model_path: str, conf_thresh: float = 0.45, nms_thresh: float = 0.45, input_size: tuple = (640, 640)):
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
         self.input_w, self.input_h = input_size
@@ -319,8 +319,8 @@ class YOLOXDetector:
 class StandaloneOrinPipeline:
     """Complete Standalone Orin Pipeline: Camera + YOLOX + Zenoh."""
 
-    def __init__(self, model_path: str, zenoh_port: int = 7447):
-        self.detector = YOLOXDetector(model_path)
+    def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447):
+        self.detector = YOLOXDetector(model_path, conf_thresh=conf_thresh)
         self.zenoh_port = zenoh_port
 
         self.latest_kinematic = None
@@ -390,10 +390,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="/home/tesla/models/yolox-sPlus-opt.engine",
                         help="Path to YOLOX Engine (.engine) or ONNX (.onnx) model file")
+    parser.add_argument("--conf", type=float, default=0.45,
+                        help="Confidence threshold (default: 0.45)")
     parser.add_argument("--demo", action="store_true", help="Display live detection window")
     args = parser.parse_args()
 
-    pipeline = StandaloneOrinPipeline(args.model)
+    pipeline = StandaloneOrinPipeline(args.model, conf_thresh=args.conf)
     pipeline.start()
 
     print("[OrinPipeline] Starting RealSense camera capture...")
