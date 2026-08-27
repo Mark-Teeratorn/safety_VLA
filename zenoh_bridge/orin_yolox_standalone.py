@@ -221,16 +221,48 @@ class YOLOXDetector:
         boxes, scores, class_ids = self.postprocess(predictions[0], ratio, img.shape)
         return boxes, scores, class_ids
 
+    def _generate_grids_and_strides(self):
+        """Generate grid coordinates and strides for YOLOX anchor-free head decoding.
+        Matches Autoware generateGridsAndStride() exactly."""
+        strides = [8, 16, 32]
+        grids = []
+        exp_strides = []
+        for stride in strides:
+            grid_h = self.input_h // stride
+            grid_w = self.input_w // stride
+            for gy in range(grid_h):
+                for gx in range(grid_w):
+                    grids.append([gx, gy])
+                    exp_strides.append(stride)
+        return np.array(grids, dtype=np.float32), np.array(exp_strides, dtype=np.float32)
+
     def postprocess(self, predictions: np.ndarray, ratio: float, orig_shape: tuple):
         """
-        Decode YOLOX predictions and apply NMS.
-        Matches Autoware generateYoloxProposals + decodeOutputs logic.
-        The ONNX model outputs decoded [cx, cy, w, h, obj_conf, cls_conf...] per anchor.
+        Decode raw YOLOX predictions using grid+stride decoding.
+        Matches Autoware generateYoloxProposals + decodeOutputs exactly.
+        Raw output format per anchor: [x_offset, y_offset, w_raw, h_raw, obj_conf, cls_conf...]
         """
         if len(predictions.shape) == 3:
             predictions = predictions[0]
 
-        # Extract confidence scores (Autoware: box_objectness * box_cls_score)
+        # Generate grids and strides for decoding
+        if not hasattr(self, '_grids'):
+            self._grids, self._strides = self._generate_grids_and_strides()
+
+        grids = self._grids
+        strides = self._strides
+
+        # Decode raw outputs → actual pixel coordinates (Autoware generateYoloxProposals)
+        # x_center = (feat[0] + grid_x) * stride
+        # y_center = (feat[1] + grid_y) * stride
+        # w = exp(feat[2]) * stride
+        # h = exp(feat[3]) * stride
+        x_center = (predictions[:, 0] + grids[:, 0]) * strides
+        y_center = (predictions[:, 1] + grids[:, 1]) * strides
+        w = np.exp(predictions[:, 2]) * strides
+        h = np.exp(predictions[:, 3]) * strides
+
+        # Confidence: objectness * class_score
         obj_conf = predictions[:, 4]
         class_conf = predictions[:, 5:]
         class_ids = np.argmax(class_conf, axis=1)
@@ -240,23 +272,25 @@ class YOLOXDetector:
         if not np.any(mask):
             return [], [], []
 
-        boxes = predictions[mask, :4]
+        x_center = x_center[mask]
+        y_center = y_center[mask]
+        w = w[mask]
+        h = h[mask]
         scores = scores[mask]
         class_ids = class_ids[mask]
 
-        # Convert [x_center, y_center, w, h] to [x1, y1, x2, y2]
-        # Then scale back to original image coords (top-left padding: just divide by ratio)
-        x1 = (boxes[:, 0] - boxes[:, 2] / 2.0) / ratio
-        y1 = (boxes[:, 1] - boxes[:, 3] / 2.0) / ratio
-        x2 = (boxes[:, 0] + boxes[:, 2] / 2.0) / ratio
-        y2 = (boxes[:, 1] + boxes[:, 3] / 2.0) / ratio
+        # Convert to [x1, y1, x2, y2] in original image coordinates
+        x1 = (x_center - w / 2.0) / ratio
+        y1 = (y_center - h / 2.0) / ratio
+        x2 = (x_center + w / 2.0) / ratio
+        y2 = (y_center + h / 2.0) / ratio
 
         # Clip to original image boundaries
-        h, w = orig_shape[:2]
-        x1 = np.clip(x1, 0, w - 1)
-        y1 = np.clip(y1, 0, h - 1)
-        x2 = np.clip(x2, 0, w - 1)
-        y2 = np.clip(y2, 0, h - 1)
+        oh, ow = orig_shape[:2]
+        x1 = np.clip(x1, 0, ow - 1)
+        y1 = np.clip(y1, 0, oh - 1)
+        x2 = np.clip(x2, 0, ow - 1)
+        y2 = np.clip(y2, 0, oh - 1)
 
         final_boxes = np.stack([x1, y1, x2, y2], axis=1)
 
