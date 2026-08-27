@@ -49,10 +49,78 @@ CLASS_NAMES = [
     "car", "truck", "bus", "pedestrian", "cyclist",
     "motorcycle", "trailer", "obstacle"
 ]
+try:
+    import tensorrt as trt
+    import ctypes
+    _HAS_TRT = True
+except ImportError:
+    _HAS_TRT = False
+
+
+class TensorRTEngine:
+    """Native TensorRT Engine Execution via libcudart."""
+
+    def __init__(self, engine_path: str):
+        self.logger = trt.Logger(trt.Logger.WARNING)
+        print(f"[YOLOX] Loading TensorRT Engine: {engine_path}")
+        with open(engine_path, "rb") as f, trt.Runtime(self.logger) as runtime:
+            self.engine = runtime.deserialize_cuda_engine(f.read())
+        self.context = self.engine.create_execution_context()
+
+        # Load CUDA runtime library
+        try:
+            self.cudart = ctypes.CDLL('libcudart.so')
+        except OSError:
+            self.cudart = ctypes.CDLL('libcudart.so.12')
+
+        self.bindings = []
+        self.num_tensors = self.engine.num_io_tensors
+
+        for i in range(self.num_tensors):
+            tensor_name = self.engine.get_tensor_name(i)
+            is_input = (self.engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT)
+            shape = self.engine.get_tensor_shape(tensor_name)
+            dtype = trt.nptype(self.engine.get_tensor_dtype(tensor_name))
+            size = int(np.prod(shape)) * np.dtype(dtype).itemsize
+
+            ptr = ctypes.c_void_p()
+            self.cudart.cudaMalloc(ctypes.byref(ptr), size)
+            self.bindings.append(int(ptr.value))
+
+            if is_input:
+                self.input_name = tensor_name
+                self.input_shape = shape
+                self.input_ptr = ptr
+                self.input_size = size
+                self.input_dtype = dtype
+            else:
+                self.output_name = tensor_name
+                self.output_ptr = ptr
+                self.output_shape = shape
+                self.output_size = size
+                self.output_dtype = dtype
+                self.output_host = np.empty(shape, dtype=dtype)
+
+    def infer(self, blob_np: np.ndarray) -> np.ndarray:
+        # Host to Device (cudaMemcpyHostToDevice = 1)
+        blob_contig = np.ascontiguousarray(blob_np, dtype=self.input_dtype)
+        self.cudart.cudaMemcpy(self.input_ptr, blob_contig.ctypes.data, self.input_size, 1)
+
+        # Set addresses
+        for i in range(self.num_tensors):
+            tname = self.engine.get_tensor_name(i)
+            self.context.set_tensor_address(tname, self.bindings[i])
+
+        # Execute
+        self.context.execute_async_v3(0)
+
+        # Device to Host (cudaMemcpyDeviceToHost = 2)
+        self.cudart.cudaMemcpy(self.output_host.ctypes.data, self.output_ptr, self.output_size, 2)
+        return self.output_host
 
 
 class YOLOXDetector:
-    """Standalone YOLOX Inference Engine using TensorRT / ONNXRuntime GPU / OpenCV DNN."""
+    """Standalone YOLOX Inference Engine using TensorRT Engine / ONNXRuntime GPU / OpenCV DNN."""
 
     def __init__(self, model_path: str, conf_thresh: float = 0.3, nms_thresh: float = 0.45, input_size: tuple = (640, 640)):
         self.conf_thresh = conf_thresh
@@ -60,8 +128,23 @@ class YOLOXDetector:
         self.input_w, self.input_h = input_size
         self.backend = None
 
-        # 1. Try ONNXRuntime with TensorRT / CUDA
-        if _HAS_ORT and model_path.endswith('.onnx'):
+        # 1. Native TensorRT .engine file
+        if model_path.endswith('.engine'):
+            if _HAS_TRT:
+                try:
+                    self.trt_engine = TensorRTEngine(model_path)
+                    shape = self.trt_engine.input_shape
+                    if len(shape) >= 4 and isinstance(shape[2], int) and isinstance(shape[3], int):
+                        self.input_h, self.input_w = shape[2], shape[3]
+                    self.backend = "trt_engine"
+                    print(f"[YOLOX] TensorRT GPU Engine ready! ({self.input_w}x{self.input_h})")
+                except Exception as e:
+                    print(f"[YOLOX] TensorRT Engine init failed: {e}")
+            else:
+                print("[YOLOX] ERROR: tensorrt Python package is missing for .engine file.")
+
+        # 2. Try ONNXRuntime with TensorRT / CUDA
+        if self.backend is None and _HAS_ORT and model_path.endswith('.onnx'):
             try:
                 providers = ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
                 print(f"[YOLOX] Loading model with ONNXRuntime GPU/TensorRT: {model_path}")
@@ -76,7 +159,7 @@ class YOLOXDetector:
             except Exception as e:
                 print(f"[YOLOX] ONNXRuntime init notice: {e}")
 
-        # 2. Try OpenCV DNN
+        # 3. Try OpenCV DNN
         if self.backend is None and model_path.endswith('.onnx'):
             print(f"[YOLOX] Loading model with OpenCV DNN: {model_path}")
             self.net = cv2.dnn.readNetFromONNX(model_path)
@@ -111,7 +194,7 @@ class YOLOXDetector:
             cv2.BORDER_CONSTANT, value=(114, 114, 114)
         )
 
-        if self.backend == "ort":
+        if self.backend in ["ort", "trt_engine"]:
             blob = img_padded.transpose((2, 0, 1))[::-1]  # BGR to RGB
             blob = np.ascontiguousarray(blob, dtype=np.float32)
             blob = np.expand_dims(blob, axis=0)
@@ -125,7 +208,9 @@ class YOLOXDetector:
         """Run object detection on BGR image."""
         blob, ratio, (dw, dh) = self.preprocess(img)
 
-        if self.backend == "ort":
+        if self.backend == "trt_engine":
+            predictions = self.trt_engine.infer(blob)
+        elif self.backend == "ort":
             outputs = self.session.run(None, {self.input_name: blob})
             predictions = outputs[0]
         else:
@@ -253,8 +338,8 @@ class StandaloneOrinPipeline:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="/home/tesla/models/yolox-sPlus-opt.onnx",
-                        help="Path to YOLOX ONNX or Engine model file")
+    parser.add_argument("--model", default="/home/tesla/models/yolox-sPlus-opt.engine",
+                        help="Path to YOLOX Engine (.engine) or ONNX (.onnx) model file")
     parser.add_argument("--demo", action="store_true", help="Display live detection window")
     args = parser.parse_args()
 
