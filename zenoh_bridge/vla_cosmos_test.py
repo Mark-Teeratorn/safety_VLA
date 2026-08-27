@@ -287,90 +287,71 @@ class VLACosmosAssistedReasoner:
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs explicit Chain-of-Thought (CoT) VLA prompt requiring step-by-step cognitive reasoning."""
+        """Constructs high-sensitivity VLA prompt forcing independent visual inspection of raw HD image frame."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
-            box = [int(v) for v in d['bbox']]
-            hint_lines.append(f"- Candidate {i}: {d['label']} {box} ({d['confidence']:.2f})")
+            if not d.get("is_novel"):
+                box = [int(v) for v in d['bbox']]
+                hint_lines.append(f"- Candidate {i}: {d['label']} {box} ({d['confidence']:.2f})")
 
-        hints_str = "\n".join(hint_lines) if hint_lines else "- None"
+        hints_str = "\n".join(hint_lines) if hint_lines else "- None (YOLO missed/unlabelled)"
 
         return (
-            f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Safety Brain.\n\n"
-            f"[INPUTS]: Image 1 = Raw RGB Camera View | Image 2 = YOLO Overlay View\n"
-            f"[YOLO HINTS]:\n{hints_str}\n\n"
-            f"[CHAIN-OF-THOUGHT (CoT) INSTRUCTIONS]:\n"
-            f"Step 1 [Visual Grounding]: Compare Image 1 (Raw) & Image 2 (YOLO). Scan driving floor for unlabelled hazards (DANGER VLA WARNING).\n"
-            f"Step 2 [Threat Analysis]: Evaluate trajectory occupancy, proximity, and vulnerability.\n"
-            f"Step 3 [Risk Rating]: Rate overall collision risk (CRITICAL / WARNING / SAFE).\n"
-            f"Step 4 [Control Output]: Output recommended Target Speed (m/s), Emergency Brake (True/False), and full CoT Explanation."
+            f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
+            f"[INPUTS]:\n"
+            f"- Image 1: High-Resolution Raw RGB View (Primary inspection for open-world/long-tail hazards).\n"
+            f"- Image 2: YOLO Assistance Overlay View.\n\n"
+            f"[YOLO ASSISTANCE HINTS]:\n{hints_str}\n\n"
+            f"[CHAIN-OF-THOUGHT (CoT) REASONING INSTRUCTIONS]:\n"
+            f"IMPORTANT: YOLO only detects standard closed-set classes. It CANNOT detect novel hazards (dogs, animals, debris, dropped objects, phone screens, strollers).\n"
+            f"1. VISUAL INSPECTION: Thoroughly scan Image 1 (Raw View) across the driving lane floor regardless of YOLO hints.\n"
+            f"2. GROUNDING & THREAT ANALYSIS: Ground any unlabelled obstacle as 'DANGER VLA WARNING' and measure trajectory collision threat.\n"
+            f"3. ACTION SYNTHESIS: Output Risk (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and Step-by-Step CoT Explanation."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
-        # 1. High-Precision Open-World 2D Visual Grounding on raw_frame_bgr
+        # 1. Open-World Visual Saliency Inspection on raw_frame_bgr
         h, w = raw_frame_bgr.shape[:2]
         
-        # Vehicle Forward Driving Corridor ROI (central lane zone: 20%-80% width, 30%-90% height)
-        roi_x1, roi_x2 = int(w * 0.20), int(w * 0.80)
-        roi_y1, roi_y2 = int(h * 0.30), int(h * 0.90)
+        # Central driving trajectory region (middle 70% width, lower 65% height)
+        roi_x1, roi_x2 = int(w * 0.15), int(w * 0.85)
+        roi_y1, roi_y2 = int(h * 0.25), int(h * 0.95)
         roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
         
-        # Convert to CIELAB color space for robust luminance & chromatic contrast against road surface
-        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
-        l_chan, a_chan, b_chan = cv2.split(lab)
+        # Calculate visual contrast & gradient saliency (detects dogs, phones, objects held in front of camera)
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        magnitude = cv2.magnitude(grad_x, grad_y)
         
-        # Compute mean background reference of driving surface
-        l_mean, a_mean, b_mean = np.mean(l_chan), np.mean(a_chan), np.mean(b_chan)
+        # Threshold high-saliency visual regions
+        _, saliency_mask = cv2.threshold(magnitude.astype(np.uint8), 35, 255, cv2.THRESH_BINARY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        saliency_mask = cv2.morphologyEx(saliency_mask, cv2.MORPH_CLOSE, kernel)
         
-        # Euclidean Lab color distance (perceptual saliency map)
-        dist_l = cv2.absdiff(l_chan, np.uint8(l_mean)).astype(np.float32)
-        dist_a = cv2.absdiff(a_chan, np.uint8(a_mean)).astype(np.float32)
-        dist_b = cv2.absdiff(b_chan, np.uint8(b_mean)).astype(np.float32)
-        saliency_map = np.sqrt(dist_l**2 + dist_a**2 + dist_b**2)
-        
-        # Normalize & Threshold (adaptive percentile)
-        sal_norm = cv2.normalize(saliency_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        _, sal_thresh = cv2.threshold(sal_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Morphological Filtering (remove high-frequency noise & fuse object blobs)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-        sal_clean = cv2.morphologyEx(sal_thresh, cv2.MORPH_CLOSE, kernel)
-        sal_clean = cv2.morphologyEx(sal_clean, cv2.MORPH_OPEN, kernel)
-        
-        contours, _ = cv2.findContours(sal_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        roi_area = float((roi_x2 - roi_x1) * (roi_y2 - roi_y1))
-        frame_area = float(w * h)
+        contours, _ = cv2.findContours(saliency_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         novel_visual_obstacles = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # Filter objects occupying > 2.5% of ROI area (real physical obstacles like dogs, boxes, animals)
-            if area > (roi_area * 0.025):
+            if area > 2500:  # Significant visual object (phone, dog, animal, debris)
                 bx, by, bw, bh = cv2.boundingRect(cnt)
                 abs_x1, abs_y1 = roi_x1 + bx, roi_y1 + by
                 abs_x2, abs_y2 = abs_x1 + bw, abs_y1 + bh
                 
-                # Verify non-overlap with closed-set YOLO hints
+                # Check overlap with existing YOLO bounding hints
                 overlaps_yolo = False
                 for yh in yolo_hints:
                     yx1, yy1, yx2, yy2 = yh["bbox"]
-                    # Calculate IoU overlap
-                    inter_x1 = max(abs_x1, yx1)
-                    inter_y1 = max(abs_y1, yy1)
-                    inter_x2 = min(abs_x2, yx2)
-                    inter_y2 = min(abs_y2, yy2)
-                    if inter_x2 > inter_x1 and inter_y2 > inter_y1:
-                        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-                        if inter_area / float(bw * bh) > 0.3:
-                            overlaps_yolo = True
-                            break
+                    if not (abs_x2 < yx1 or abs_x1 > yx2 or abs_y2 < yy1 or abs_y1 > yy2):
+                        overlaps_yolo = True
+                        break
                 
                 if not overlaps_yolo:
-                    norm_area = (bw * bh) / frame_area
+                    norm_area = (bw * bh) / float(w * h)
                     novel_visual_obstacles.append({
                         "label": "DANGER VLA WARNING",
-                        "confidence": 0.91,
+                        "confidence": 0.89,
                         "bbox": [float(abs_x1), float(abs_y1), float(abs_x2), float(abs_y2)],
                         "norm_area": norm_area,
                         "is_novel": True,
@@ -592,18 +573,23 @@ def main():
         if not _HAS_REALSENSE:
             print("[VLA Cosmos Test] ERROR: pyrealsense2 is not installed.")
             return
-        print("[VLA Cosmos Test] Starting RealSense Camera Pipeline...")
+        print("[VLA Cosmos Test] Starting RealSense Camera Pipeline (1280x720 HD)...")
         rs_pipeline = rs.pipeline()
         cfg = rs.config()
-        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
         rs_pipeline.start(cfg)
     else:
-        print("[VLA Cosmos Test] Starting USB Camera (cv2.VideoCapture)...")
+        print("[VLA Cosmos Test] Starting USB Camera (1280x720 HD)...")
         cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     print("[VLA Cosmos Test] Main Simulation active. Running live perception & VLA safety reasoning...")
+    win_name = "VLA Cosmos Test - Real Camera & Zenoh Pipeline (HD)"
+    if args.demo:
+        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win_name, 1280, 720)
+
     try:
         while True:
             if args.camera == "realsense":
@@ -620,7 +606,7 @@ def main():
             frame_hud = sim.process_and_draw(frame_bgr)
 
             if args.demo:
-                cv2.imshow("VLA Cosmos Test - Real Camera & Zenoh Pipeline", frame_hud)
+                cv2.imshow(win_name, frame_hud)
                 if cv2.waitKey(1) == ord('q'):
                     break
     except KeyboardInterrupt:
