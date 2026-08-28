@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
-VLA Cosmos Test Engine — Live RealSense/USB Camera, Zenoh Bridge & VLA Safety Brain
-====================================================================================
-Integrates:
+VLA Cosmos Main Simulation & Safety Perception Engine
+======================================================
+Integrates live camera capture, Autoware YOLOX object detection,
+Vision-Language-Action (VLA) safety reasoning, and Zenoh telemetry streaming.
+
+Features:
   1. Live Camera Input (RealSense or USB Camera)
-  2. Autoware YOLOX GPU Inference (Auxiliary Spatial Assistance Signal)
-  3. Vision-Language-Action (VLA) Primary Safety Reasoning Engine
-     (Evaluates full visual scene for scene danger, including unlabelled/long-tail hazards)
-  4. Real-time Zenoh Telemetry Publishing (aimslab/orin/perception/objects & aimslab/orin/control_cmd)
-  5. Live Visual HUD Telemetry Dashboard
+  2. Autoware YOLOX TensorRT/ONNX GPU Inference
+  3. VLA Safety Reasoning Engine (Risk Assessment & Control Actions)
+  4. Real-time Visual Telemetry Dashboard (Bounding Boxes & VLA HUD Overlay)
+  5. Zenoh Telemetry Publishing (aimslab/orin/perception/objects & aimslab/orin/control_cmd)
 
 Usage:
-    python3 zenoh_bridge/vla_cosmos_test.py --model ~/models/yolox-sPlus-opt.engine --demo
-    python3 zenoh_bridge/vla_cosmos_test.py --model ~/models/yolox-sPlus-opt.onnx --camera usb --demo
+    python3 zenoh_bridge/vla_cosmos.py --model ~/models/yolox-sPlus-opt.engine --demo
+    python3 zenoh_bridge/vla_cosmos.py --model ~/models/yolox-sPlus-opt.onnx --camera usb --demo
 """
 
 import argparse
 import json
 import time
+import threading
 import numpy as np
 import cv2
 import zenoh
@@ -120,8 +123,8 @@ class TensorRTEngine:
         return self.output_host
 
 
-class YOLOAssistanceDetector:
-    """YOLO used strictly as an auxiliary spatial proposal assistant."""
+class YOLOXDetector:
+    """Standalone YOLOX Inference Engine matching Autoware Universe tensorrt_yolox C++ spec."""
 
     def __init__(self, model_path: str, conf_thresh: float = 0.45, nms_thresh: float = 0.45, input_size: tuple = (640, 640)):
         self.conf_thresh = conf_thresh
@@ -137,16 +140,16 @@ class YOLOAssistanceDetector:
                     if len(shape) >= 4 and isinstance(shape[2], int) and isinstance(shape[3], int):
                         self.input_h, self.input_w = shape[2], shape[3]
                     self.backend = "trt_engine"
-                    print(f"[YOLO Assistance] TensorRT GPU Engine ready! ({self.input_w}x{self.input_h})")
+                    print(f"[YOLOX] TensorRT GPU Engine ready! ({self.input_w}x{self.input_h})")
                 except Exception as e:
-                    print(f"[YOLO Assistance] TensorRT Engine init failed: {e}")
+                    print(f"[YOLOX] TensorRT Engine init failed: {e}")
             else:
-                print("[YOLO Assistance] ERROR: tensorrt Python package missing.")
+                print("[YOLOX] ERROR: tensorrt Python package missing.")
 
         if self.backend is None and _HAS_ORT and model_path.endswith('.onnx'):
             try:
                 providers = ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
-                print(f"[YOLO Assistance] Loading ONNXRuntime GPU: {model_path}")
+                print(f"[YOLOX] Loading ONNXRuntime GPU/TensorRT: {model_path}")
                 self.session = ort.InferenceSession(model_path, providers=providers)
                 model_inputs = self.session.get_inputs()
                 self.input_name = model_inputs[0].name
@@ -154,24 +157,25 @@ class YOLOAssistanceDetector:
                 if isinstance(shape[2], int) and isinstance(shape[3], int):
                     self.input_h, self.input_w = shape[2], shape[3]
                 self.backend = "ort"
-                print(f"[YOLO Assistance] ONNXRuntime GPU backend ready ({self.input_w}x{self.input_h})")
+                print(f"[YOLOX] ONNXRuntime GPU backend ready ({self.input_w}x{self.input_h})")
             except Exception as e:
-                print(f"[YOLO Assistance] ONNXRuntime notice: {e}")
+                print(f"[YOLOX] ONNXRuntime notice: {e}")
 
         if self.backend is None and model_path.endswith('.onnx'):
-            print(f"[YOLO Assistance] Loading OpenCV DNN: {model_path}")
+            print(f"[YOLOX] Loading OpenCV DNN: {model_path}")
             self.net = cv2.dnn.readNetFromONNX(model_path)
             try:
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                print("[YOLO Assistance] OpenCV DNN CUDA backend enabled")
+                print("[YOLOX] OpenCV DNN CUDA backend enabled")
             except Exception:
                 self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
                 self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-                print("[YOLO Assistance] OpenCV DNN CPU backend enabled")
+                print("[YOLOX] OpenCV DNN CPU backend enabled")
             self.backend = "cv2_dnn"
 
     def preprocess(self, img: np.ndarray):
+        """Top-left padding (114), BGR format, raw float32 [0-255]."""
         h, w = img.shape[:2]
         r = min(self.input_h / h, self.input_w / w)
         new_h, new_w = int(round(h * r)), int(round(w * r))
@@ -272,71 +276,20 @@ class YOLOAssistanceDetector:
         return final_boxes[indices], scores[indices], class_ids[indices]
 
 
-class VLACosmosAssistedReasoner:
-    """
-    Vision-Language-Action (VLA) Primary Safety Brain.
-    
-    YOLO serves strictly as an auxiliary spatial proposal signal.
-    VLA evaluates the full visual scene context to assess overall driving danger,
-    detecting unlabelled / long-tail hazards (dogs, animals, debris) that YOLO misses.
-    """
-
-import os
-import sys
-import threading
-import queue
-
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "safe_driving_carla"))
-try:
-    from cognitive_reasoner import CosmosCognitiveReasoner
-    _HAS_COGNITIVE_REASONER = True
-except ImportError:
-    _HAS_COGNITIVE_REASONER = False
-
-
-class VLACosmosAssistedReasoner:
-    """Vision-Language-Action (VLA) Safety Assessment & Controller.
-    
-    Evaluates raw camera frame and spatial hints, sending prompts to 
-    Cosmos-Reason2-2B GGUF model via llama-cli to generate real natural-language CoT reasoning.
-    """
+class VLAReasoningEngine:Q
+    """Vision-Language-Action (VLA) Safety Assessment & Controller."""
 
     def __init__(self, cruise_speed: float = 3.0):
         self.cruise_speed = cruise_speed
-        self.risk_level = "SAFE"
+        self.risk_level = "SAFE"  # SAFE, WARNING, CRITICAL
         self.last_decision = "CLEAR TO PROCEED"
-        self.prompt_queue = queue.Queue(maxsize=1)
-        self.running = True
-        
-        if _HAS_COGNITIVE_REASONER:
-            self.reasoner = CosmosCognitiveReasoner()
-            self.llm_thread = threading.Thread(target=self._vla_llm_worker, daemon=True)
-            self.llm_thread.start()
-        else:
-            self.reasoner = None
-
-    def _vla_llm_worker(self):
-        """Background thread executing llama-cli on Cosmos-Reason2-2B GGUF model."""
-        while self.running:
-            try:
-                prompt = self.prompt_queue.get(timeout=0.2)
-                if self.reasoner:
-                    llm_cot = self.reasoner.reason_on_prompt(prompt)
-                    if llm_cot and len(llm_cot) > 10:
-                        self.last_decision = f"[LLM CoT]: {llm_cot}"
-                self.prompt_queue.task_done()
-            except queue.Empty:
-                continue
-            except Exception:
-                pass
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
         """Constructs high-sensitivity VLA prompt with Temporal CoT Memory from previous frame."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
-            if not d.get("is_novel"):
-                box = [int(v) for v in d['bbox']]
-                hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
+            box = [int(v) for v in d['bbox']]
+            hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
 
         hints_str = "\n".join(hint_lines) if hint_lines else "- None (YOLO missed / unlabelled long-tail hazard present)"
         prev_cot = getattr(self, 'last_decision', 'CLEAR TO PROCEED')
@@ -375,17 +328,11 @@ class VLACosmosAssistedReasoner:
             area = box_w * box_h
             norm_area = area / frame_area
             
-            # Center coordinates of candidate box
             cx = (x1 + x2) / 2.0
+            vulnerability_mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD"] else 1.0
             
-            # Vulnerability multiplier for high-risk road users
-            vulnerability_mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD", "DANGER VLA WARNING"] else 1.0
-            
-            # Trajectory corridor multiplier (ego lane = 1.0, adjacent lane = 0.25)
             in_ego_lane = (ego_lane_x1 <= cx <= ego_lane_x2)
             lane_mult = 1.0 if in_ego_lane else 0.25
-            
-            # Proximity weighting based on vertical position in frame (closer objects are lower in frame y2)
             y_proximity = (y2 / float(h))
             
             threat_score = norm_area * vulnerability_mult * lane_mult * conf * (y_proximity ** 2)
@@ -400,11 +347,6 @@ class VLACosmosAssistedReasoner:
             })
 
         vla_prompt = self.construct_vla_prompt(all_threats)
-        if self.prompt_queue.empty():
-            try:
-                self.prompt_queue.put_nowait(vla_prompt)
-            except Exception:
-                pass
 
         if not all_threats:
             self.risk_level = "SAFE"
@@ -413,14 +355,12 @@ class VLACosmosAssistedReasoner:
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "novel_obstacles": []
+                "vla_prompt": vla_prompt
             }
 
         all_threats.sort(key=lambda t: t["score"], reverse=True)
         top = all_threats[0]
 
-        # Adaptive Risk Categorization: CRITICAL requires high score AND target in ego-lane corridor
         if top["score"] > 0.15 and top["in_ego_lane"]:
             self.risk_level = "CRITICAL"
             tag_name = top["label"]
@@ -434,8 +374,7 @@ class VLACosmosAssistedReasoner:
                 "target_speed": 0.0,
                 "emergency_brake": True,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "novel_obstacles": []
+                "vla_prompt": vla_prompt
             }
         elif top["score"] > 0.04:
             self.risk_level = "WARNING"
@@ -452,8 +391,7 @@ class VLACosmosAssistedReasoner:
                 "target_speed": speed,
                 "emergency_brake": False,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "novel_obstacles": []
+                "vla_prompt": vla_prompt
             }
         else:
             self.risk_level = "SAFE"
@@ -468,17 +406,16 @@ class VLACosmosAssistedReasoner:
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
                 "reason": self.last_decision,
-                "vla_prompt": vla_prompt,
-                "novel_obstacles": []
+                "vla_prompt": vla_prompt
             }
 
 
-class VLACosmosTestSimulation:
-    """Main Simulation Execution Pipeline with Real Camera & Zenoh Bridge."""
+class VLACosmosMainSimulation:
+    """Main Simulation Execution Pipeline."""
 
     def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447):
-        self.detector = YOLOAssistanceDetector(model_path, conf_thresh=conf_thresh)
-        self.vla_engine = VLACosmosAssistedReasoner()
+        self.detector = YOLOXDetector(model_path, conf_thresh=conf_thresh)
+        self.vla_engine = VLAReasoningEngine()
         self.zenoh_port = zenoh_port
         self.running = False
 
@@ -486,92 +423,84 @@ class VLACosmosTestSimulation:
         cfg = zenoh.Config()
         cfg.insert_json5("mode", '"router"')
         cfg.insert_json5("listen/endpoints", f'["tcp/0.0.0.0:{self.zenoh_port}"]')
-        print(f"[VLA Cosmos Test] Starting Zenoh router on 0.0.0.0:{self.zenoh_port}...")
+        print(f"[VLA Cosmos] Starting Zenoh router on 0.0.0.0:{self.zenoh_port}...")
         self.session = zenoh.open(cfg)
         self.pub_perception = self.session.declare_publisher(KEY_PERCEPTION)
         self.pub_control = self.session.declare_publisher(KEY_CONTROL)
-        print("[VLA Cosmos Test] Zenoh topics ready.")
+        print("[VLA Cosmos] Zenoh topics ready.")
 
     def process_and_draw(self, frame_bgr: np.ndarray):
         t0 = time.time()
         boxes, scores, class_ids = self.detector.infer(frame_bgr)
         inf_ms = (time.time() - t0) * 1000
 
-        yolo_hints = []
+        detections = []
         for box, score, cid in zip(boxes, scores, class_ids):
             label = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"class_{cid}"
             if label != "UNKNOWN":
-                yolo_hints.append({
+                detections.append({
                     "label": label,
                     "confidence": float(score),
                     "bbox": [float(v) for v in box]
                 })
 
-        # Run Primary VLA Multimodal Safety Reasoning
-        vla_cmd = self.vla_engine.evaluate(frame_bgr, yolo_hints)
+        # Run VLA Safety Reasoning
+        vla_cmd = self.vla_engine.evaluate(frame_bgr, detections)
 
-        # Print ONLY VLA Chain-of-Thought (CoT) Reasoning to Terminal
-        reason = vla_cmd.get("reason", "")
-        print(f"[CoT Thought]: {reason}")
-
-        # Publish Perception & Control over Zenoh
+        # Publish Perception & Control via Zenoh
         if hasattr(self, 'pub_perception'):
             self.pub_perception.put(json.dumps({
                 "timestamp": time.time(),
                 "inference_ms": round(inf_ms, 2),
-                "detections": yolo_hints
+                "detections": detections
             }).encode())
-
+            
             self.pub_control.put(json.dumps({
                 "timestamp": time.time(),
-                "vla_prompt": vla_cmd.get("vla_prompt", ""),
                 "command": vla_cmd
             }).encode())
 
-        # Render VLA Telemetry HUD Overlay
-        self._overlay_vla_hud(frame_bgr, yolo_hints, vla_cmd, inf_ms)
+        # Render VLA Visual HUD Overlay onto camera frame
+        self._overlay_vla_hud(frame_bgr, detections, vla_cmd, inf_ms)
         return frame_bgr
 
-    def _overlay_vla_hud(self, img: np.ndarray, yolo_hints: list, vla_cmd: dict, inf_ms: float):
-        # 1. Draw YOLO Assistance Box Proposals
-        for det in yolo_hints:
-            if det.get("is_novel"):
-                continue
+    def _overlay_vla_hud(self, img: np.ndarray, detections: list, vla_cmd: dict, inf_ms: float):
+        # Draw Bounding Boxes
+        for det in detections:
             x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
             lbl = det["label"]
             conf = det["confidence"]
-
+            
+            # Box Colors: Pedestrians/Cyclists = Cyan, Vehicles = Green
             color = (255, 255, 0) if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else (0, 255, 0)
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(img, f"YOLO Hint: {lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
+            cv2.putText(img, f"{lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # Top HUD Banner Background (Height = 70px)
+        # Top HUD Banner Background
         h, w = img.shape[:2]
-        cv2.rectangle(img, (0, 0), (w, 70), (15, 20, 28), -1)
-        cv2.line(img, (0, 70), (w, 70), (60, 80, 110), 2)
+        cv2.rectangle(img, (0, 0), (w, 55), (15, 20, 28), -1)
+        cv2.line(img, (0, 55), (w, 55), (60, 80, 110), 2)
 
         # VLA Risk Status Pill
         risk = self.vla_engine.risk_level
         r_color = (0, 255, 0) if risk == "SAFE" else ((0, 165, 255) if risk == "WARNING" else (0, 0, 255))
-        cv2.rectangle(img, (10, 10), (130, 60), r_color, -1)
-        cv2.putText(img, risk, (22, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.rectangle(img, (10, 10), (130, 45), r_color, -1)
+        cv2.putText(img, risk, (22, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
-        # VLA Reasoning Banner
+        # VLA Reason Text
         reason = vla_cmd.get("reason", "")
-        cv2.putText(img, "VLA BRAIN (YOLO = ASSISTANCE SIGNAL)", (145, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1)
-        cv2.putText(img, f"DECISION: {reason}", (145, 53),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 245, 255), 1)
+        cv2.putText(img, f"VLA REASON: {reason}", (145, 33),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 245, 255), 1)
 
         # FPS & Inference Latency
         fps = 1000.0 / max(inf_ms, 1.0)
-        cv2.putText(img, f"{fps:.1f} FPS ({inf_ms:.1f}ms)", (w - 180, 45),
+        cv2.putText(img, f"{fps:.1f} FPS ({inf_ms:.1f}ms)", (w - 180, 33),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 2)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="VLA Cosmos Test Engine with Real Camera & Zenoh")
+    parser = argparse.ArgumentParser(description="VLA Cosmos Main Simulation & Safety Perception")
     parser.add_argument("--model", default="/home/tesla/models/yolox-sPlus-opt.engine",
                         help="Path to YOLOX Engine (.engine) or ONNX (.onnx) model")
     parser.add_argument("--camera", choices=["realsense", "usb"], default="realsense",
@@ -580,26 +509,26 @@ def main():
     parser.add_argument("--demo", action="store_true", help="Launch live GUI video window")
     args = parser.parse_args()
 
-    sim = VLACosmosTestSimulation(args.model, conf_thresh=args.conf)
+    sim = VLACosmosMainSimulation(args.model, conf_thresh=args.conf)
     sim.start_zenoh()
 
     if args.camera == "realsense":
         if not _HAS_REALSENSE:
-            print("[VLA Cosmos Test] ERROR: pyrealsense2 is not installed.")
+            print("[VLA Cosmos] ERROR: pyrealsense2 is not installed.")
             return
-        print("[VLA Cosmos Test] Starting RealSense Camera Pipeline (1280x720 HD)...")
+        print("[VLA Cosmos] Starting RealSense Camera Pipeline (1280x720 HD)...")
         rs_pipeline = rs.pipeline()
         cfg = rs.config()
         cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
         rs_pipeline.start(cfg)
     else:
-        print("[VLA Cosmos Test] Starting USB Camera (1280x720 HD)...")
+        print("[VLA Cosmos] Starting USB Camera (1280x720 HD)...")
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    print("[VLA Cosmos Test] Main Simulation active. Running live perception & VLA safety reasoning...")
-    win_name = "VLA Cosmos Test - Real Camera & Zenoh Pipeline (HD)"
+    print("[VLA Cosmos] Main Simulation active. Running inference & safety reasoning...")
+    win_name = "VLA Cosmos Main Simulation (HD 1280x720)"
     if args.demo:
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(win_name, 1280, 720)
