@@ -528,8 +528,15 @@ class VLAReasoningEngine:
 class VLACosmosMainSimulation:
     """Main Simulation Execution Pipeline."""
 
-    def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447):
-        self.detector = YOLOXDetector(model_path, conf_thresh=conf_thresh)
+    def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447, use_yolo: bool = True):
+        self.use_yolo = use_yolo
+        if self.use_yolo:
+            self.detector = YOLOXDetector(model_path, conf_thresh=conf_thresh)
+        else:
+            self.detector = None
+            print("=========================================================")
+            print("[VLA Cosmos] PURE VLM EVALUATION MODE (YOLO Completely Disabled)")
+            print("=========================================================")
         self.vla_engine = VLAReasoningEngine()
         self.zenoh_port = zenoh_port
         self.running = False
@@ -546,18 +553,18 @@ class VLACosmosMainSimulation:
 
     def process_and_draw(self, frame_bgr: np.ndarray):
         t0 = time.time()
-        boxes, scores, class_ids = self.detector.infer(frame_bgr)
-        inf_ms = (time.time() - t0) * 1000
-
         detections = []
-        for box, score, cid in zip(boxes, scores, class_ids):
-            label = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"class_{cid}"
-            if label != "UNKNOWN":
-                detections.append({
-                    "label": label,
-                    "confidence": float(score),
-                    "bbox": [float(v) for v in box]
-                })
+        if self.use_yolo and self.detector:
+            boxes, scores, class_ids = self.detector.infer(frame_bgr)
+            for box, score, cid in zip(boxes, scores, class_ids):
+                label = CLASS_NAMES[cid] if cid < len(CLASS_NAMES) else f"class_{cid}"
+                if label != "UNKNOWN":
+                    detections.append({
+                        "label": label,
+                        "confidence": float(score),
+                        "bbox": [float(v) for v in box]
+                    })
+        inf_ms = (time.time() - t0) * 1000
 
         # Run VLA Safety Reasoning
         vla_cmd = self.vla_engine.evaluate(frame_bgr, detections)
@@ -622,9 +629,10 @@ def main():
                         help="Camera input source (realsense or usb)")
     parser.add_argument("--conf", type=float, default=0.45, help="Confidence threshold")
     parser.add_argument("--demo", action="store_true", help="Launch live GUI video window")
+    parser.add_argument("--no-yolo", action="store_true", help="Bypass YOLO completely and let Cosmos-Reason2-2B VLM decide 100% on raw camera frames")
     args = parser.parse_args()
 
-    sim = VLACosmosMainSimulation(args.model, conf_thresh=args.conf)
+    sim = VLACosmosMainSimulation(args.model, conf_thresh=args.conf, use_yolo=not args.no_yolo)
     sim.start_zenoh()
 
     if args.camera == "realsense":
