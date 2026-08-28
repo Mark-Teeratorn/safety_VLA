@@ -415,7 +415,39 @@ class VLAReasoningEngine:
             except Exception:
                 pass
 
-        # FIRST AUTHORITY: Parse VLM Multimodal Chain-of-Thought output for OOD Hazards & Emergency Stops
+        # 1. IF YOLO DETECTS STANDARD OBJECTS IN EGO-LANE -> FAST SPATIAL REFLEX
+        if all_threats:
+            all_threats.sort(key=lambda t: t["score"], reverse=True)
+            top = all_threats[0]
+            if top["score"] > 0.15 and top["in_ego_lane"]:
+                self.risk_level = "CRITICAL"
+                tag_name = top["label"]
+                self.last_decision = (
+                    f"[YOLO Reflex]: [{tag_name}] blocking ego-lane. "
+                    f"Action: EMERGENCY BRAKE (0.0 m/s)!"
+                )
+                return {
+                    "target_speed": 0.0,
+                    "emergency_brake": True,
+                    "reason": self.last_decision,
+                    "vla_prompt": vla_prompt
+                }
+            elif top["score"] > 0.04:
+                self.risk_level = "WARNING"
+                speed = max(1.0, self.cruise_speed * 0.5)
+                tag_name = top["label"]
+                self.last_decision = (
+                    f"[YOLO Reflex]: [{tag_name}] near lane. "
+                    f"Action: ADAPTIVE SLOW DOWN ({speed:.1f} m/s)."
+                )
+                return {
+                    "target_speed": speed,
+                    "emergency_brake": False,
+                    "reason": self.last_decision,
+                    "vla_prompt": vla_prompt
+                }
+
+        # 2. IF YOLO DETECTS 0 OBJECTS (UNLABELLED / OOD NOVEL HAZARD SCENARIOS) -> VLM HAS 100% SUPREME DECISION AUTHORITY
         last_cot = str(self.last_decision).upper()
         if any(k in last_cot for k in ["CRITICAL", "EMERGENCY", "BRAKE", "BLOCK", "STOP", "0.0", "OOD", "PILLAR", "OBSTACLE", "DEBRIS"]):
             self.risk_level = "CRITICAL"
@@ -435,57 +467,6 @@ class VLAReasoningEngine:
             }
         else:
             self.risk_level = "SAFE"
-            return {
-                "target_speed": self.cruise_speed,
-                "emergency_brake": False,
-                "reason": self.last_decision,
-                "vla_prompt": vla_prompt
-            }
-
-        all_threats.sort(key=lambda t: t["score"], reverse=True)
-        top = all_threats[0]
-
-        if top["score"] > 0.15 and top["in_ego_lane"]:
-            self.risk_level = "CRITICAL"
-            tag_name = top["label"]
-            self.last_decision = (
-                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] directly blocking ego-lane. "
-                f"2. Collision Proximity: Imminent threat (area={top['norm_area']*100:.1f}%). "
-                f"3. Risk Rating: CRITICAL. "
-                f"4. Action: EMERGENCY BRAKE (0.0 m/s)!"
-            )
-            return {
-                "target_speed": 0.0,
-                "emergency_brake": True,
-                "reason": self.last_decision,
-                "vla_prompt": vla_prompt
-            }
-        elif top["score"] > 0.04:
-            self.risk_level = "WARNING"
-            speed = max(1.0, self.cruise_speed * 0.5)
-            tag_name = top["label"]
-            location_str = "in ego-lane" if top["in_ego_lane"] else "in adjacent lane"
-            self.last_decision = (
-                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] observed {location_str}. "
-                f"2. Collision Proximity: Moderate distance. "
-                f"3. Risk Rating: WARNING. "
-                f"4. Action: ADAPTIVE SLOW DOWN ({speed:.1f} m/s)."
-            )
-            return {
-                "target_speed": speed,
-                "emergency_brake": False,
-                "reason": self.last_decision,
-                "vla_prompt": vla_prompt
-            }
-        else:
-            self.risk_level = "SAFE"
-            tag_name = top["label"]
-            self.last_decision = (
-                f"[CoT Reasoning]: 1. Visual Grounding: [{tag_name}] detected at peripheral safe zone. "
-                f"2. Collision Proximity: No lane intrusion. "
-                f"3. Risk Rating: SAFE. "
-                f"4. Action: CRUISING ({self.cruise_speed:.1f} m/s)."
-            )
             return {
                 "target_speed": self.cruise_speed,
                 "emergency_brake": False,
