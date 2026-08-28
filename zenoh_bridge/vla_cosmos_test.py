@@ -331,7 +331,7 @@ class VLACosmosAssistedReasoner:
                 pass
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs high-sensitivity VLA prompt forcing independent visual inspection of raw HD image frame with expanded CoT reasoning."""
+        """Constructs high-sensitivity VLA prompt with Temporal CoT Memory from previous frame."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
             if not d.get("is_novel"):
@@ -339,10 +339,14 @@ class VLACosmosAssistedReasoner:
                 hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
 
         hints_str = "\n".join(hint_lines) if hint_lines else "- None (YOLO missed / unlabelled long-tail hazard present)"
+        prev_cot = getattr(self, 'last_decision', 'CLEAR TO PROCEED')
 
         return (
             f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
             f"[CRITICAL SAFETY NOTICE]: YOLO is ONLY an auxiliary spatial assistance signal. There ARE open-world / long-tail scenarios where severe hazards (stray animals/dogs, fallen cargo, road debris, strollers, fallen trees, dropped items) exist on the road surface BUT YOLO CANNOT DETECT THEM due to its limited closed-set vocabulary.\n\n"
+            f"[TEMPORAL SAFETY MEMORY (PREVIOUS FRAME CoT)]:\n"
+            f"- Previous Frame Thought: {prev_cot}\n"
+            f"- Instruction: Use previous thought for temporal tracking. Update CoT based on obstacle trajectory movement from previous frame to current frame.\n\n"
             f"[INPUTS]:\n"
             f"- Image 1: High-Resolution Raw RGB View (Primary inspection for open-world/long-tail hazards).\n"
             f"- Image 2: YOLO Assistance Overlay View.\n\n"
@@ -351,7 +355,7 @@ class VLACosmosAssistedReasoner:
             f"Perform deep step-by-step cognitive safety evaluation:\n"
             f"1. RAW VISUAL SCAN: Independently scan Image 1 (Raw View) across the ego-driving lane floor regardless of YOLO hints.\n"
             f"2. OPEN-WORLD HAZARD IDENTIFICATION: Flag any unlabelled obstacle (dogs, debris, dropped objects) missed by YOLO.\n"
-            f"3. TRAJECTORY & PROXIMITY ASSESSMENT: Evaluate collision Time-to-Contact (TTC) and lane trajectory intrusion.\n"
+            f"3. TRAJECTORY & TEMPORAL PROXIMITY ASSESSMENT: Evaluate collision Time-to-Contact (TTC) and lane trajectory intrusion relative to previous frame.\n"
             f"4. SAFETY ACTION SYNTHESIS: Output Risk Rating (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and detailed CoT rationale."
         )
 
