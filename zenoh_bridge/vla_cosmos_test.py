@@ -276,7 +276,7 @@ class YOLOXDetector:
         return final_boxes[indices], scores[indices], class_ids[indices]
 
 
-class VLAReasoningEngine:Q
+class VLAReasoningEngine:
     """Vision-Language-Action (VLA) Safety Assessment & Controller."""
 
     def __init__(self, cruise_speed: float = 3.0):
@@ -285,7 +285,7 @@ class VLAReasoningEngine:Q
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs high-sensitivity VLA prompt with Temporal CoT Memory from previous frame."""
+        """Constructs high-sensitivity VLA prompt with Temporal CoT Memory and Line-of-Sight Blockage Stop Mandate."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
             box = [int(v) for v in d['bbox']]
@@ -297,6 +297,7 @@ class VLAReasoningEngine:Q
         return (
             f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
             f"[CRITICAL SAFETY NOTICE]: YOLO is ONLY an auxiliary spatial assistance signal. There ARE open-world / long-tail scenarios where severe hazards (stray animals/dogs, fallen cargo, road debris, strollers, fallen trees, dropped items) exist on the road surface BUT YOLO CANNOT DETECT THEM due to its limited closed-set vocabulary.\n\n"
+            f"[MANDATORY LINE-OF-SIGHT STOPPING RULE]: If ANY object, obstacle, vehicle, pedestrian, or debris is blocking the vehicle's driving line-of-sight or obstructing the forward road corridor, you MUST immediately output CRITICAL risk rating, set target speed to 0.0 m/s, and command an EMERGENCY STOP.\n\n"
             f"[TEMPORAL SAFETY MEMORY (PREVIOUS FRAME CoT)]:\n"
             f"- Previous Frame Thought: {prev_cot}\n"
             f"- Instruction: Use previous thought for temporal tracking. Update CoT based on obstacle trajectory movement from previous frame to current frame.\n\n"
@@ -306,10 +307,10 @@ class VLAReasoningEngine:Q
             f"[YOLO ASSISTANCE HINTS]:\n{hints_str}\n\n"
             f"[EXPANDED CHAIN-OF-THOUGHT (CoT) REASONING INSTRUCTIONS]:\n"
             f"Perform deep step-by-step cognitive safety evaluation:\n"
-            f"1. RAW VISUAL SCAN: Independently scan Image 1 (Raw View) across the ego-driving lane floor regardless of YOLO hints.\n"
-            f"2. OPEN-WORLD HAZARD IDENTIFICATION: Flag any unlabelled obstacle (dogs, debris, dropped objects) missed by YOLO.\n"
+            f"1. RAW VISUAL SCAN: Independently scan Image 1 (Raw View) across the forward road line-of-sight regardless of YOLO hints.\n"
+            f"2. ROAD BLOCKAGE & HAZARD IDENTIFICATION: Check if any obstacle or unlabelled hazard is blocking the driving path.\n"
             f"3. TRAJECTORY & TEMPORAL PROXIMITY ASSESSMENT: Evaluate collision Time-to-Contact (TTC) and lane trajectory intrusion relative to previous frame.\n"
-            f"4. SAFETY ACTION SYNTHESIS: Output Risk Rating (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and detailed CoT rationale."
+            f"4. SAFETY ACTION SYNTHESIS: If line-of-sight/road is blocked -> Output CRITICAL, 0.0 m/s, Emergency Brake (True). Otherwise output appropriate Risk Rating, Target Speed, and detailed CoT rationale."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
