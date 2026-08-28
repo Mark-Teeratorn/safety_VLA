@@ -322,38 +322,39 @@ class VLAReasoningEngine:
                 pass
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs high-sensitivity VLA prompt with Temporal CoT Memory and Line-of-Sight Blockage Stop Mandate."""
+        """Constructs Zero-Shot Out-of-Distribution (OOD) VLA prompt empowering Cosmos VLM to detect novel hazards."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
-            box = [int(v) for v in d['bbox']]
-            hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
+            if not d.get("is_novel"):
+                box = [int(v) for v in d['bbox']]
+                hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
 
-        hints_str = "\n".join(hint_lines) if hint_lines else "- None (YOLO missed / unlabelled long-tail hazard present)"
+        hints_str = "\n".join(hint_lines) if hint_lines else "- None (No standard COCO objects; scan raw scene for unlabelled OOD hazards)"
         prev_cot = getattr(self, 'last_decision', 'CLEAR TO PROCEED')
 
         return (
             f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
-            f"[CRITICAL SAFETY NOTICE]: YOLO is ONLY an auxiliary spatial assistance signal. There ARE open-world / long-tail scenarios where severe hazards (stray animals/dogs, fallen cargo, road debris, strollers, fallen trees, dropped items) exist on the road surface BUT YOLO CANNOT DETECT THEM due to its limited closed-set vocabulary.\n\n"
-            f"[MANDATORY LINE-OF-SIGHT STOPPING RULE]: If ANY object, obstacle, vehicle, pedestrian, or debris is blocking the vehicle's driving line-of-sight or obstructing the forward road corridor, you MUST immediately output CRITICAL risk rating, set target speed to 0.0 m/s, and command an EMERGENCY STOP.\n\n"
+            f"[ZERO-SHOT OUT-OF-DISTRIBUTION (OOD) MANDATE]:\n"
+            f"You are evaluating Image 1 (Raw Camera View). Standard object detectors (YOLO) can ONLY see basic COCO objects. You MUST independently inspect Image 1 for ANY Out-of-Distribution (OOD) or novel hazards—such as pillars, poles, cardboard boxes, fallen cargo, road debris, stray animals, strollers, or dropped items—that obstruct the driving lane.\n\n"
+            f"[MANDATORY SAFETY RULE]: If ANY novel OOD object, obstacle, pillar, pedestrian, or debris blocks or intrudes into the forward vehicle line-of-sight/corridor, you MUST output CRITICAL risk rating, 0.0 m/s speed, and command EMERGENCY BRAKE (TRUE).\n\n"
             f"[TEMPORAL SAFETY MEMORY (PREVIOUS FRAME CoT)]:\n"
             f"- Previous Frame Thought: {prev_cot}\n"
-            f"- Instruction: Use previous thought for temporal tracking. Update CoT based on obstacle trajectory movement from previous frame to current frame.\n\n"
+            f"- Instruction: Track obstacle position & movement relative to previous frame.\n\n"
             f"[INPUTS]:\n"
-            f"- Image 1: High-Resolution Raw RGB View (Primary inspection for open-world/long-tail hazards).\n"
-            f"- Image 2: YOLO Assistance Overlay View.\n\n"
-            f"[YOLO ASSISTANCE HINTS]:\n{hints_str}\n\n"
-            f"[EXPANDED CHAIN-OF-THOUGHT (CoT) REASONING INSTRUCTIONS]:\n"
-            f"Perform deep step-by-step cognitive safety evaluation:\n"
-            f"1. RAW VISUAL SCAN: Independently scan Image 1 (Raw View) across the forward road line-of-sight regardless of YOLO hints.\n"
-            f"2. ROAD BLOCKAGE & HAZARD IDENTIFICATION: Check if any obstacle or unlabelled hazard is blocking the driving path.\n"
-            f"3. TRAJECTORY & TEMPORAL PROXIMITY ASSESSMENT: Evaluate collision Time-to-Contact (TTC) and lane trajectory intrusion relative to previous frame.\n"
-            f"4. SAFETY ACTION SYNTHESIS: If line-of-sight/road is blocked -> Output CRITICAL, 0.0 m/s, Emergency Brake (True). Otherwise output appropriate Risk Rating, Target Speed, and detailed CoT rationale."
+            f"- Image 1: High-Resolution Raw BGR Scene (PRIMARY visual scan for unlabelled/OOD hazards).\n"
+            f"- Image 2: YOLO Bounding Box Overlay Scene.\n\n"
+            f"[YOLO AUXILIARY HINTS]:\n{hints_str}\n\n"
+            f"[STEP-BY-STEP CoT REASONING INSTRUCTIONS]:\n"
+            f"1. RAW SCENE OOD SCAN: Scan Image 1 across the forward road corridor for unlabelled OOD hazards (pillars, boxes, debris).\n"
+            f"2. HAZARD IDENTIFICATION: Describe any visual obstruction blocking forward line-of-sight.\n"
+            f"3. PROXIMITY & TRAJECTORY EVALUATION: Estimate distance and collision risk.\n"
+            f"4. SAFETY ACTION SYNTHESIS: Output Risk Rating (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and detailed CoT rationale."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
         h, w = raw_frame_bgr.shape[:2]
         frame_area = float(w * h)
-        ego_lane_x1, ego_lane_x2 = int(w * 0.30), int(w * 0.70)
+        ego_lane_x1, ego_lane_x2 = int(w * 0.28), int(w * 0.72)
         
         all_threats = []
         for det in yolo_hints:
@@ -367,7 +368,7 @@ class VLAReasoningEngine:
             norm_area = area / frame_area
             
             cx = (x1 + x2) / 2.0
-            vulnerability_mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "LONG_TAIL_HAZARD"] else 1.0
+            vulnerability_mult = 2.0 if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE", "OOD_NOVEL_HAZARD_OBSTACLE"] else 1.0
             
             in_ego_lane = (ego_lane_x1 <= cx <= ego_lane_x2)
             lane_mult = 1.0 if in_ego_lane else 0.25
@@ -384,44 +385,12 @@ class VLAReasoningEngine:
                 "norm_area": norm_area
             })
 
-        # Open-World Out-Of-Distribution (OOD) Road Corridor Inspection
-        roi_x1, roi_x2 = int(w * 0.28), int(w * 0.72)
-        roi_y1, roi_y2 = int(h * 0.35), int(h * 0.95)
-        corridor_roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
-        
-        if corridor_roi.size > 0:
-            gray_roi = cv2.cvtColor(corridor_roi, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray_roi, 35, 120)
-            edge_density = np.count_nonzero(edges) / float(gray_roi.size)
-            std_dev = float(np.std(gray_roi))
-            
-            # High edge density OR high surface variance indicates a physical OOD hazard (pillar, pole, box, debris)
-            if edge_density > 0.045 or std_dev > 48.0:
-                contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                valid_contours = [c for c in contours if cv2.contourArea(c) > 800]
-                if valid_contours:
-                    c = max(valid_contours, key=cv2.contourArea)
-                    bx, by, bw, bh = cv2.boundingRect(c)
-                    obs_x1, obs_y1 = roi_x1 + bx, roi_y1 + by
-                    obs_x2, obs_y2 = obs_x1 + bw, obs_y1 + bh
-                    obs_area = float(bw * bh) / frame_area
-                    
-                    all_threats.append({
-                        "label": "OOD_NOVEL_HAZARD_OBSTACLE",
-                        "score": max(0.25, obs_area * 8.0),  # High threat priority for novel OOD hazard
-                        "confidence": 0.95,
-                        "bbox": [obs_x1, obs_y1, obs_x2, obs_y2],
-                        "in_ego_lane": True,
-                        "norm_area": obs_area,
-                        "is_novel": True
-                    })
-
         vla_prompt = self.construct_vla_prompt(all_threats)
         
         # Construct Dual-Scene VLM Input Frame (Raw RGB View + YOLO Bounding Box Overlay View)
         half_w = w // 2
         raw_panel = cv2.resize(raw_frame_bgr, (half_w, h))
-        cv2.putText(raw_panel, "IMAGE 1: RAW SCENE (Open-World Hazard)", (10, 25),
+        cv2.putText(raw_panel, "IMAGE 1: RAW SCENE (VLM OOD Scan)", (10, 25),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 2)
         
         yolo_panel = raw_frame_bgr.copy()
@@ -429,7 +398,7 @@ class VLAReasoningEngine:
             bx1, by1, bx2, by2 = [int(v) for v in det["bbox"]]
             lbl = det["label"]
             conf = det["confidence"]
-            color = (0, 140, 255) if det.get("is_novel") or "PILLAR" in lbl else ((255, 255, 0) if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else (0, 255, 0))
+            color = (0, 140, 255) if det.get("is_novel") or "OOD" in lbl or "PILLAR" in lbl else ((255, 255, 0) if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else (0, 255, 0))
             cv2.rectangle(yolo_panel, (bx1, by1), (bx2, by2), color, 2)
             cv2.putText(yolo_panel, f"{lbl} {conf:.2f}", (bx1, max(by1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
@@ -446,25 +415,24 @@ class VLAReasoningEngine:
             except Exception:
                 pass
 
-        if not all_threats:
-            # When YOLO misses an obstacle, parse VLA LLM Chain-of-Thought output for open-world long-tail hazards
-            last_cot = str(self.last_decision).upper()
-            if any(k in last_cot for k in ["CRITICAL", "EMERGENCY", "BRAKE", "BLOCK", "STOP", "0.0"]):
-                self.risk_level = "CRITICAL"
-                return {
-                    "target_speed": 0.0,
-                    "emergency_brake": True,
-                    "reason": self.last_decision,
-                    "vla_prompt": vla_prompt
-                }
-            elif any(k in last_cot for k in ["WARNING", "SLOW", "HAZARD", "CAUTION", "1.5"]):
-                self.risk_level = "WARNING"
-                return {
-                    "target_speed": 1.5,
-                    "emergency_brake": False,
-                    "reason": self.last_decision,
-                    "vla_prompt": vla_prompt
-                }
+        # FIRST AUTHORITY: Parse VLM Multimodal Chain-of-Thought output for OOD Hazards & Emergency Stops
+        last_cot = str(self.last_decision).upper()
+        if any(k in last_cot for k in ["CRITICAL", "EMERGENCY", "BRAKE", "BLOCK", "STOP", "0.0", "OOD", "PILLAR", "OBSTACLE", "DEBRIS"]):
+            self.risk_level = "CRITICAL"
+            return {
+                "target_speed": 0.0,
+                "emergency_brake": True,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
+        elif any(k in last_cot for k in ["WARNING", "SLOW", "HAZARD", "CAUTION", "1.5"]):
+            self.risk_level = "WARNING"
+            return {
+                "target_speed": 1.5,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
             else:
                 self.risk_level = "SAFE"
                 return {
