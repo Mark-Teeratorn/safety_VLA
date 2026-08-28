@@ -347,6 +347,37 @@ class VLAReasoningEngine:
                 "norm_area": norm_area
             })
 
+        # Open-World Road Corridor Inspection: Ground unlabelled hazards (pillars, poles, boxes, debris) blocking line-of-sight
+        roi_x1, roi_x2 = int(w * 0.30), int(w * 0.70)
+        roi_y1, roi_y2 = int(h * 0.35), int(h * 0.95)
+        corridor_roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
+        
+        if corridor_roi.size > 0:
+            gray_roi = cv2.cvtColor(corridor_roi, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray_roi, 40, 140)
+            edge_density = np.count_nonzero(edges) / float(gray_roi.size)
+            
+            # High edge contrast in forward driving corridor indicates a physical pillar / obstacle blocking path
+            if edge_density > 0.06:
+                contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                valid_contours = [c for c in contours if cv2.contourArea(c) > 1200]
+                if valid_contours:
+                    c = max(valid_contours, key=cv2.contourArea)
+                    bx, by, bw, bh = cv2.boundingRect(c)
+                    obs_x1, obs_y1 = roi_x1 + bx, roi_y1 + by
+                    obs_x2, obs_y2 = obs_x1 + bw, obs_y1 + bh
+                    obs_area = float(bw * bh) / frame_area
+                    
+                    all_threats.append({
+                        "label": "UNLABELLED_PILLAR_OBSTACLE",
+                        "score": max(0.20, obs_area * 6.0),  # High threat priority for unlabelled obstacle blocking corridor
+                        "confidence": 0.92,
+                        "bbox": [obs_x1, obs_y1, obs_x2, obs_y2],
+                        "in_ego_lane": True,
+                        "norm_area": obs_area,
+                        "is_novel": True
+                    })
+
         vla_prompt = self.construct_vla_prompt(all_threats)
 
         if not all_threats:
@@ -490,8 +521,8 @@ class VLACosmosMainSimulation:
             lbl = det["label"]
             conf = det["confidence"]
             
-            # Box Colors: Pedestrians/Cyclists = Cyan, Vehicles = Green
-            color = (255, 255, 0) if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else (0, 255, 0)
+            # Box Colors: Novel Pillar/Debris = Orange/Red, Pedestrians = Cyan, Vehicles = Green
+            color = (0, 140, 255) if det.get("is_novel") or "PILLAR" in lbl else ((255, 255, 0) if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else (0, 255, 0))
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             cv2.putText(img, f"{lbl} {conf:.2f}", (x1, max(y1 - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
