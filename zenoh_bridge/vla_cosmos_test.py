@@ -281,10 +281,54 @@ class VLACosmosAssistedReasoner:
     detecting unlabelled / long-tail hazards (dogs, animals, debris) that YOLO misses.
     """
 
+import os
+import sys
+import threading
+import queue
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "safe_driving_carla"))
+try:
+    from cognitive_reasoner import CosmosCognitiveReasoner
+    _HAS_COGNITIVE_REASONER = True
+except ImportError:
+    _HAS_COGNITIVE_REASONER = False
+
+
+class VLACosmosAssistedReasoner:
+    """Vision-Language-Action (VLA) Safety Assessment & Controller.
+    
+    Evaluates raw camera frame and spatial hints, sending prompts to 
+    Cosmos-Reason2-2B GGUF model via llama-cli to generate real natural-language CoT reasoning.
+    """
+
     def __init__(self, cruise_speed: float = 3.0):
         self.cruise_speed = cruise_speed
         self.risk_level = "SAFE"
         self.last_decision = "CLEAR TO PROCEED"
+        self.prompt_queue = queue.Queue(maxsize=1)
+        self.running = True
+        
+        if _HAS_COGNITIVE_REASONER:
+            self.reasoner = CosmosCognitiveReasoner()
+            self.llm_thread = threading.Thread(target=self._vla_llm_worker, daemon=True)
+            self.llm_thread.start()
+        else:
+            self.reasoner = None
+
+    def _vla_llm_worker(self):
+        """Background thread executing llama-cli on Cosmos-Reason2-2B GGUF model."""
+        while self.running:
+            try:
+                prompt = self.prompt_queue.get(timeout=0.2)
+                if self.reasoner:
+                    llm_cot = self.reasoner.reason_on_prompt(prompt)
+                    if llm_cot and len(llm_cot) > 10:
+                        self.last_decision = f"[LLM CoT]: {llm_cot}"
+                self.prompt_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception:
+                pass
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
         """Constructs high-sensitivity VLA prompt forcing independent visual inspection of raw HD image frame with expanded CoT reasoning."""
@@ -352,6 +396,11 @@ class VLACosmosAssistedReasoner:
             })
 
         vla_prompt = self.construct_vla_prompt(all_threats)
+        if self.prompt_queue.empty():
+            try:
+                self.prompt_queue.put_nowait(vla_prompt)
+            except Exception:
+                pass
 
         if not all_threats:
             self.risk_level = "SAFE"

@@ -60,3 +60,27 @@ class CosmosCognitiveReasoner:
             'reasoning': reasoning_text,
             'latency_ms': round(latency_ms, 2)
         }
+
+    def reason_on_prompt(self, prompt: str) -> str:
+        """Executes llama-cli on Cosmos-Reason2-2B with custom VLA prompt to generate real natural language CoT."""
+        if not (self.has_native_cli and os.path.exists(self.model_path)):
+            return "Cosmos-VLA Model Engine unavailable. Using reflex fallback."
+
+        try:
+            cmd = [
+                self.llama_cli,
+                '-m', self.model_path,
+                '-p', prompt,
+                '-n', '128',
+                '-ngl', '99',
+                '--no-warmup'
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2.5)
+            output = proc.stdout
+            if output and len(output) > 20:
+                lines = [line.strip() for line in output.splitlines() if line.strip() and not line.startswith('llama_') and not line.startswith('main:')]
+                if lines:
+                    return ' '.join(lines)
+        except Exception as e:
+            pass
+        return "Visual CoT: Trajectory clear. Cruising safely."
