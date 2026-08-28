@@ -509,18 +509,23 @@ def main():
         if not _HAS_REALSENSE:
             print("[VLA Cosmos] ERROR: pyrealsense2 is not installed.")
             return
-        print("[VLA Cosmos] Starting RealSense Camera Pipeline...")
+        print("[VLA Cosmos] Starting RealSense Camera Pipeline (1280x720 HD)...")
         rs_pipeline = rs.pipeline()
         cfg = rs.config()
-        cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
         rs_pipeline.start(cfg)
     else:
-        print("[VLA Cosmos] Starting USB Camera (cv2.VideoCapture)...")
+        print("[VLA Cosmos] Starting USB Camera (1280x720 HD)...")
         cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     print("[VLA Cosmos] Main Simulation active. Running inference & safety reasoning...")
+    win_name = "VLA Cosmos Main Simulation (HD 1280x720)"
+    if args.demo:
+        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win_name, 1280, 720)
+
     try:
         while True:
             if args.camera == "realsense":
@@ -537,7 +542,7 @@ def main():
             frame_hud = sim.process_and_draw(frame_bgr)
 
             if args.demo:
-                cv2.imshow("VLA Cosmos Main Simulation", frame_hud)
+                cv2.imshow(win_name, frame_hud)
                 if cv2.waitKey(1) == ord('q'):
                     break
     except KeyboardInterrupt:
