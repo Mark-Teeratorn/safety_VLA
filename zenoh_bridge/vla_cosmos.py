@@ -416,9 +416,32 @@ class VLAReasoningEngine:
                     })
 
         vla_prompt = self.construct_vla_prompt(all_threats)
+        
+        # Construct Dual-Scene VLM Input Frame (Raw RGB View + YOLO Bounding Box Overlay View)
+        half_w = w // 2
+        raw_panel = cv2.resize(raw_frame_bgr, (half_w, h))
+        cv2.putText(raw_panel, "IMAGE 1: RAW SCENE (Open-World Hazard)", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 2)
+        
+        yolo_panel = raw_frame_bgr.copy()
+        for det in yolo_hints:
+            bx1, by1, bx2, by2 = [int(v) for v in det["bbox"]]
+            lbl = det["label"]
+            conf = det["confidence"]
+            color = (0, 140, 255) if det.get("is_novel") or "PILLAR" in lbl else ((255, 255, 0) if lbl in ["PEDESTRIAN", "BICYCLE", "MOTORCYCLE"] else (0, 255, 0))
+            cv2.rectangle(yolo_panel, (bx1, by1), (bx2, by2), color, 2)
+            cv2.putText(yolo_panel, f"{lbl} {conf:.2f}", (bx1, max(by1 - 5, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        yolo_panel_resized = cv2.resize(yolo_panel, (half_w, h))
+        cv2.putText(yolo_panel_resized, "IMAGE 2: YOLO BBOX OVERLAY", (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
+        
+        dual_view_vlm_frame = np.hstack([raw_panel, yolo_panel_resized])
+
         if hasattr(self, 'prompt_queue') and self.prompt_queue.empty():
             try:
-                self.prompt_queue.put_nowait((raw_frame_bgr.copy(), vla_prompt))
+                self.prompt_queue.put_nowait((dual_view_vlm_frame, vla_prompt))
             except Exception:
                 pass
 
