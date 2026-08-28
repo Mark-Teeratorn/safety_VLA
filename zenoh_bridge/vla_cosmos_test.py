@@ -384,20 +384,21 @@ class VLAReasoningEngine:
                 "norm_area": norm_area
             })
 
-        # Open-World Road Corridor Inspection: Ground unlabelled hazards (pillars, poles, boxes, debris) blocking line-of-sight
-        roi_x1, roi_x2 = int(w * 0.30), int(w * 0.70)
+        # Open-World Out-Of-Distribution (OOD) Road Corridor Inspection
+        roi_x1, roi_x2 = int(w * 0.28), int(w * 0.72)
         roi_y1, roi_y2 = int(h * 0.35), int(h * 0.95)
         corridor_roi = raw_frame_bgr[roi_y1:roi_y2, roi_x1:roi_x2]
         
         if corridor_roi.size > 0:
             gray_roi = cv2.cvtColor(corridor_roi, cv2.COLOR_BGR2GRAY)
-            edges = cv2.Canny(gray_roi, 40, 140)
+            edges = cv2.Canny(gray_roi, 35, 120)
             edge_density = np.count_nonzero(edges) / float(gray_roi.size)
+            std_dev = float(np.std(gray_roi))
             
-            # High edge contrast in forward driving corridor indicates a physical pillar / obstacle blocking path
-            if edge_density > 0.06:
+            # High edge density OR high surface variance indicates a physical OOD hazard (pillar, pole, box, debris)
+            if edge_density > 0.045 or std_dev > 48.0:
                 contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                valid_contours = [c for c in contours if cv2.contourArea(c) > 1200]
+                valid_contours = [c for c in contours if cv2.contourArea(c) > 800]
                 if valid_contours:
                     c = max(valid_contours, key=cv2.contourArea)
                     bx, by, bw, bh = cv2.boundingRect(c)
@@ -406,9 +407,9 @@ class VLAReasoningEngine:
                     obs_area = float(bw * bh) / frame_area
                     
                     all_threats.append({
-                        "label": "UNLABELLED_PILLAR_OBSTACLE",
-                        "score": max(0.20, obs_area * 6.0),  # High threat priority for unlabelled obstacle blocking corridor
-                        "confidence": 0.92,
+                        "label": "OOD_NOVEL_HAZARD_OBSTACLE",
+                        "score": max(0.25, obs_area * 8.0),  # High threat priority for novel OOD hazard
+                        "confidence": 0.95,
                         "bbox": [obs_x1, obs_y1, obs_x2, obs_y2],
                         "in_ego_lane": True,
                         "norm_area": obs_area,
