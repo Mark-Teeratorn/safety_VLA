@@ -433,14 +433,14 @@ class VLAReasoningEngine:
                 "reason": self.last_decision,
                 "vla_prompt": vla_prompt
             }
-            else:
-                self.risk_level = "SAFE"
-                return {
-                    "target_speed": self.cruise_speed,
-                    "emergency_brake": False,
-                    "reason": self.last_decision,
-                    "vla_prompt": vla_prompt
-                }
+        else:
+            self.risk_level = "SAFE"
+            return {
+                "target_speed": self.cruise_speed,
+                "emergency_brake": False,
+                "reason": self.last_decision,
+                "vla_prompt": vla_prompt
+            }
 
         all_threats.sort(key=lambda t: t["score"], reverse=True)
         top = all_threats[0]
