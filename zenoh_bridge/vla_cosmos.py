@@ -285,24 +285,27 @@ class VLAReasoningEngine:
         self.last_decision = "CLEAR TO PROCEED"
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs high-sensitivity VLA prompt forcing independent visual inspection of raw HD image frame."""
+        """Constructs high-sensitivity VLA prompt forcing independent visual inspection of raw HD image frame with expanded CoT reasoning."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
             box = [int(v) for v in d['bbox']]
-            hint_lines.append(f"- Candidate {i}: {d['label']} {box} ({d['confidence']:.2f})")
+            hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
 
-        hints_str = "\n".join(hint_lines) if hint_lines else "- None"
+        hints_str = "\n".join(hint_lines) if hint_lines else "- None (YOLO missed / unlabelled long-tail hazard present)"
 
         return (
             f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
+            f"[CRITICAL SAFETY NOTICE]: YOLO is ONLY an auxiliary spatial assistance signal. There ARE open-world / long-tail scenarios where severe hazards (stray animals/dogs, fallen cargo, road debris, strollers, fallen trees, dropped items) exist on the road surface BUT YOLO CANNOT DETECT THEM due to its limited closed-set vocabulary.\n\n"
             f"[INPUTS]:\n"
             f"- Image 1: High-Resolution Raw RGB View (Primary inspection for open-world/long-tail hazards).\n"
             f"- Image 2: YOLO Assistance Overlay View.\n\n"
             f"[YOLO ASSISTANCE HINTS]:\n{hints_str}\n\n"
-            f"[CHAIN-OF-THOUGHT (CoT) REASONING INSTRUCTIONS]:\n"
-            f"1. VISUAL INSPECTION: Thoroughly scan Image 1 (Raw View) across the driving lane floor.\n"
-            f"2. GROUNDING & THREAT ANALYSIS: Ground any unlabelled obstacle and measure trajectory collision threat.\n"
-            f"3. ACTION SYNTHESIS: Output Risk (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and Step-by-Step CoT Explanation."
+            f"[EXPANDED CHAIN-OF-THOUGHT (CoT) REASONING INSTRUCTIONS]:\n"
+            f"Perform deep step-by-step cognitive safety evaluation:\n"
+            f"1. RAW VISUAL SCAN: Independently scan Image 1 (Raw View) across the ego-driving lane floor regardless of YOLO hints.\n"
+            f"2. OPEN-WORLD HAZARD IDENTIFICATION: Flag any unlabelled obstacle (dogs, debris, dropped objects) missed by YOLO.\n"
+            f"3. TRAJECTORY & PROXIMITY ASSESSMENT: Evaluate collision Time-to-Contact (TTC) and lane trajectory intrusion.\n"
+            f"4. SAFETY ACTION SYNTHESIS: Output Risk Rating (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and detailed CoT rationale."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:

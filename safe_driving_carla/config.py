@@ -24,7 +24,7 @@ class PerceptionConfig:
 class ReasonerConfig:
     model_path: str = '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf'
     n_gpu_layers: int = 99
-    max_tokens: int = 32
+    max_tokens: int = 128
     temperature: float = 0.2
     vlm_query_interval: float = 0.35
 

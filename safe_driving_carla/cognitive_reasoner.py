@@ -40,7 +40,7 @@ class CosmosCognitiveReasoner:
                     self.llama_cli,
                     '-m', self.model_path,
                     '-p', prompt,
-                    '-n', '24',
+                    '-n', '128',
                     '-ngl', '99',
                     '--no-warmup'
                 ]
