@@ -350,14 +350,32 @@ class VLAReasoningEngine:
         vla_prompt = self.construct_vla_prompt(all_threats)
 
         if not all_threats:
-            self.risk_level = "SAFE"
-            self.last_decision = "[CoT Reasoning]: 1. Trajectory: Clear corridor. 2. Threat: Zero targets in lane. 3. Risk: SAFE. 4. Control: MAINTAIN CRUISING SPEED (3.0 m/s)."
-            return {
-                "target_speed": self.cruise_speed,
-                "emergency_brake": False,
-                "reason": self.last_decision,
-                "vla_prompt": vla_prompt
-            }
+            # When YOLO misses an obstacle, parse VLA LLM Chain-of-Thought output for open-world long-tail hazards
+            last_cot = str(self.last_decision).upper()
+            if any(k in last_cot for k in ["CRITICAL", "EMERGENCY", "BRAKE", "BLOCK", "STOP", "0.0"]):
+                self.risk_level = "CRITICAL"
+                return {
+                    "target_speed": 0.0,
+                    "emergency_brake": True,
+                    "reason": self.last_decision,
+                    "vla_prompt": vla_prompt
+                }
+            elif any(k in last_cot for k in ["WARNING", "SLOW", "HAZARD", "CAUTION", "1.5"]):
+                self.risk_level = "WARNING"
+                return {
+                    "target_speed": 1.5,
+                    "emergency_brake": False,
+                    "reason": self.last_decision,
+                    "vla_prompt": vla_prompt
+                }
+            else:
+                self.risk_level = "SAFE"
+                return {
+                    "target_speed": self.cruise_speed,
+                    "emergency_brake": False,
+                    "reason": self.last_decision,
+                    "vla_prompt": vla_prompt
+                }
 
         all_threats.sort(key=lambda t: t["score"], reverse=True)
         top = all_threats[0]
