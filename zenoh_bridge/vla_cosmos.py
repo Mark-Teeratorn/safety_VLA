@@ -276,6 +276,19 @@ class YOLOXDetector:
         return final_boxes[indices], scores[indices], class_ids[indices]
 
 
+import os
+import sys
+import threading
+import queue
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "safe_driving_carla"))
+try:
+    from cognitive_reasoner import CosmosCognitiveReasoner
+    _HAS_COGNITIVE_REASONER = True
+except ImportError:
+    _HAS_COGNITIVE_REASONER = False
+
+
 class VLAReasoningEngine:
     """Vision-Language-Action (VLA) Safety Assessment & Controller."""
 
@@ -283,6 +296,30 @@ class VLAReasoningEngine:
         self.cruise_speed = cruise_speed
         self.risk_level = "SAFE"  # SAFE, WARNING, CRITICAL
         self.last_decision = "CLEAR TO PROCEED"
+        self.prompt_queue = queue.Queue(maxsize=1)
+        self.running = True
+
+        if _HAS_COGNITIVE_REASONER:
+            self.reasoner = CosmosCognitiveReasoner()
+            self.llm_thread = threading.Thread(target=self._vla_llm_worker, daemon=True)
+            self.llm_thread.start()
+        else:
+            self.reasoner = None
+
+    def _vla_llm_worker(self):
+        """Background thread executing llama-cli with --image parameter on Cosmos-Reason2-2B GGUF model."""
+        while self.running:
+            try:
+                frame_bgr, prompt = self.prompt_queue.get(timeout=0.2)
+                if self.reasoner:
+                    llm_cot = self.reasoner.reason_on_image(frame_bgr, prompt)
+                    if llm_cot and len(llm_cot) > 10:
+                        self.last_decision = f"[VLM CoT]: {llm_cot}"
+                self.prompt_queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception:
+                pass
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
         """Constructs high-sensitivity VLA prompt with Temporal CoT Memory and Line-of-Sight Blockage Stop Mandate."""
@@ -379,6 +416,11 @@ class VLAReasoningEngine:
                     })
 
         vla_prompt = self.construct_vla_prompt(all_threats)
+        if hasattr(self, 'prompt_queue') and self.prompt_queue.empty():
+            try:
+                self.prompt_queue.put_nowait((raw_frame_bgr.copy(), vla_prompt))
+            except Exception:
+                pass
 
         if not all_threats:
             # When YOLO misses an obstacle, parse VLA LLM Chain-of-Thought output for open-world long-tail hazards

@@ -84,3 +84,30 @@ class CosmosCognitiveReasoner:
         except Exception as e:
             pass
         return "Visual CoT: Trajectory clear. Cruising safely."
+
+    def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
+        """Saves frame to /tmp/vla_frame.jpg and executes llama-cli with --image parameter so VLM sees actual camera pixels."""
+        if not (self.has_native_cli and os.path.exists(self.model_path)):
+            return "Cosmos-VLA Model Engine unavailable."
+
+        img_path = "/tmp/vla_frame.jpg"
+        try:
+            cv2.imwrite(img_path, frame_bgr)
+            cmd = [
+                self.llama_cli,
+                '-m', self.model_path,
+                '--image', img_path,
+                '-p', prompt,
+                '-n', '128',
+                '-ngl', '99',
+                '--no-warmup'
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3.0)
+            output = proc.stdout
+            if output and len(output) > 20:
+                lines = [line.strip() for line in output.splitlines() if line.strip() and not line.startswith('llama_') and not line.startswith('main:')]
+                if lines:
+                    return ' '.join(lines)
+        except Exception:
+            pass
+        return "Visual CoT: Inspecting camera scene."
