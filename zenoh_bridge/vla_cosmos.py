@@ -322,30 +322,31 @@ class VLAReasoningEngine:
                 pass
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
-        """Constructs Zero-Shot Out-of-Distribution (OOD) VLA prompt empowering Cosmos VLM to detect novel hazards."""
+        """Constructs Zero-Shot Out-of-Distribution (OOD) VLA prompt for collapsed trees, pillars, debris, and road obstructions."""
         hint_lines = []
         for i, d in enumerate(yolo_hints, 1):
             if not d.get("is_novel"):
                 box = [int(v) for v in d['bbox']]
                 hint_lines.append(f"- Candidate {i}: {d['label']} {box} (conf: {d['confidence']:.2f})")
 
-        hints_str = "\n".join(hint_lines) if hint_lines else "- None (No standard COCO objects; scan raw scene for unlabelled OOD hazards)"
+        hints_str = "\n".join(hint_lines) if hint_lines else "- None (No standard COCO objects; scan raw scene for collapsed trees, pillars, logs, debris)"
         prev_cot = getattr(self, 'last_decision', 'CLEAR TO PROCEED')
 
         return (
             f"[SYSTEM ROLE]: You are Cosmos-VLA, Primary Autonomous Vehicle Multimodal Safety Brain.\n\n"
             f"[ZERO-SHOT OUT-OF-DISTRIBUTION (OOD) MANDATE]:\n"
-            f"You are evaluating Image 1 (Raw Camera View). Standard object detectors (YOLO) can ONLY see basic COCO objects. You MUST independently inspect Image 1 for ANY Out-of-Distribution (OOD) or novel hazards—such as pillars, poles, cardboard boxes, fallen cargo, road debris, stray animals, strollers, or dropped items—that obstruct the driving lane.\n\n"
-            f"[MANDATORY SAFETY RULE]: If ANY novel OOD object, obstacle, pillar, pedestrian, or debris blocks or intrudes into the forward vehicle line-of-sight/corridor, you MUST output CRITICAL risk rating, 0.0 m/s speed, and command EMERGENCY BRAKE (TRUE).\n\n"
+            f"You are evaluating Image 1 (Raw Camera View). Standard object detectors (YOLO) CANNOT detect collapsed trees, fallen logs, branches, pillars, cardboard boxes, spilled cargo, strollers, or road debris.\n\n"
+            f"[MANDATORY EMERGENCY STOP RULE]:\n"
+            f"If ANY object, fallen tree, log, branch, pillar, pole, debris, barrier, or obstruction blocks or enters the forward driving line-of-sight/corridor, you MUST output CRITICAL risk rating, 0.0 m/s target speed, and command EMERGENCY BRAKE (TRUE).\n\n"
             f"[TEMPORAL SAFETY MEMORY (PREVIOUS FRAME CoT)]:\n"
             f"- Previous Frame Thought: {prev_cot}\n"
             f"- Instruction: Track obstacle position & movement relative to previous frame.\n\n"
             f"[INPUTS]:\n"
-            f"- Image 1: High-Resolution Raw BGR Scene (PRIMARY visual scan for unlabelled/OOD hazards).\n"
+            f"- Image 1: High-Resolution Raw BGR Scene (PRIMARY visual scan for collapsed trees & OOD hazards).\n"
             f"- Image 2: YOLO Bounding Box Overlay Scene.\n\n"
             f"[YOLO AUXILIARY HINTS]:\n{hints_str}\n\n"
             f"[STEP-BY-STEP CoT REASONING INSTRUCTIONS]:\n"
-            f"1. RAW SCENE OOD SCAN: Scan Image 1 across the forward road corridor for unlabelled OOD hazards (pillars, boxes, debris).\n"
+            f"1. RAW SCENE OOD SCAN: Scan Image 1 across the forward road corridor for collapsed trees, logs, branches, pillars, or debris.\n"
             f"2. HAZARD IDENTIFICATION: Describe any visual obstruction blocking forward line-of-sight.\n"
             f"3. PROXIMITY & TRAJECTORY EVALUATION: Estimate distance and collision risk.\n"
             f"4. SAFETY ACTION SYNTHESIS: Output Risk Rating (CRITICAL / WARNING / SAFE), Target Speed (m/s), Emergency Brake (True/False), and detailed CoT rationale."
@@ -449,7 +450,14 @@ class VLAReasoningEngine:
 
         # 2. IF YOLO DETECTS 0 OBJECTS (UNLABELLED / OOD NOVEL HAZARD SCENARIOS) -> VLM HAS 100% SUPREME DECISION AUTHORITY
         last_cot = str(self.last_decision).upper()
-        if any(k in last_cot for k in ["CRITICAL", "EMERGENCY", "BRAKE", "BLOCK", "STOP", "0.0", "OOD", "PILLAR", "OBSTACLE", "DEBRIS"]):
+        ood_hazard_keywords = [
+            "CRITICAL", "EMERGENCY", "BRAKE", "BLOCK", "STOP", "0.0", 
+            "OOD", "PILLAR", "OBSTACLE", "DEBRIS", "TREE", "FALLEN", 
+            "COLLAPSE", "LOG", "BRANCH", "TRUNK", "BARRIER", "OBSTRUCTION", 
+            "ROADBLOCK", "HAZARD", "DANGER", "IMPACT", "COLLISION", "UNSAFE"
+        ]
+        
+        if any(k in last_cot for k in ood_hazard_keywords):
             self.risk_level = "CRITICAL"
             return {
                 "target_speed": 0.0,
@@ -457,7 +465,7 @@ class VLAReasoningEngine:
                 "reason": self.last_decision,
                 "vla_prompt": vla_prompt
             }
-        elif any(k in last_cot for k in ["WARNING", "SLOW", "HAZARD", "CAUTION", "1.5"]):
+        elif any(k in last_cot for k in ["WARNING", "SLOW", "CAUTION", "1.5"]):
             self.risk_level = "WARNING"
             return {
                 "target_speed": 1.5,
