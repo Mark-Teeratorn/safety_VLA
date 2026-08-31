@@ -310,8 +310,13 @@ class CosmosCognitiveReasoner:
                 '--no-warmup',
                 '--no-rpc',
             ]
+            print(f"[Cognitive Brain] Running: {' '.join(cmd[:4])} ...")
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60.0)
+            print(f"[Cognitive Brain] Return code: {proc.returncode}")
+            if proc.stderr:
+                print(f"[Cognitive Brain] STDERR: {proc.stderr[:300]}")
             output = proc.stdout
+            print(f"[Cognitive Brain] STDOUT length: {len(output)} chars")
             if output and len(output) > 20:
                 lines = [
                     line.strip() for line in output.splitlines()
@@ -319,8 +324,8 @@ class CosmosCognitiveReasoner:
                 ]
                 if lines:
                     return ' '.join(lines)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Cognitive Brain] Exception: {e}")
         return "Visual CoT: Inspecting camera scene."
 
 
