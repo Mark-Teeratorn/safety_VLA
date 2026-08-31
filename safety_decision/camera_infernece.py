@@ -290,9 +290,10 @@ class YOLOXDetector:
 
 
 import urllib.request
+import atexit
 
 class CosmosCognitiveReasoner:
-    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) supporting fast persistent llama-server HTTP or llama-cli subprocess."""
+    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) supporting auto-spawned persistent llama-server for 0.2s ultra-low latency."""
 
     def __init__(self, model_path: str = None):
         default_models = [
@@ -308,7 +309,55 @@ class CosmosCognitiveReasoner:
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
         self.server_urls = ["http://127.0.0.1:8080/completion", "http://127.0.0.1:8089/completion"]
+        self.server_process = None
+
         print(f'[Cognitive Brain] Initialized Cosmos VLM: {os.path.basename(self.model_path)}')
+        self._ensure_server_running()
+
+    def _ensure_server_running(self):
+        """Auto-spawns llama-server in background if not already active."""
+        if self._query_server("Hello") is not None:
+            print("[Cognitive Brain] Persistent llama-server is ACTIVE! (0.2s ultra-fast mode)")
+            return
+
+        server_binaries = [
+            '/usr/local/bin/llama-server',
+            '/opt/llama.cpp/build/bin/llama-server',
+            'llama-server'
+        ]
+        server_bin = next((b for b in server_binaries if os.path.exists(b)), None)
+
+        if server_bin and os.path.exists(self.model_path):
+            print(f"[Cognitive Brain] Auto-starting persistent llama-server daemon ({server_bin})...")
+            try:
+                cmd = [
+                    server_bin,
+                    '-m', self.model_path,
+                    '-c', '1024',
+                    '-t', '8',
+                    '-ngl', '0',
+                    '--port', '8080',
+                    '--no-mmap'
+                ]
+                self.server_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                atexit.register(self.stop_server)
+
+                # Wait up to 10s for server to become ready
+                for _ in range(20):
+                    time.sleep(0.5)
+                    if self._query_server("Hello") is not None:
+                        print("[Cognitive Brain] Persistent llama-server READY on http://127.0.0.1:8080! (0.2s ultra-fast mode)")
+                        return
+            except Exception as e:
+                print(f"[Cognitive Brain] Notice: Could not auto-start llama-server daemon: {e}")
+
+    def stop_server(self):
+        if self.server_process:
+            try:
+                self.server_process.terminate()
+                self.server_process.wait(timeout=2.0)
+            except Exception:
+                pass
 
     def _query_server(self, prompt: str) -> Optional[str]:
         """Queries persistent llama-server HTTP endpoint for 0.2s ultra-low latency."""
