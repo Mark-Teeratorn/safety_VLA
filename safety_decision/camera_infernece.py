@@ -137,6 +137,10 @@ class YOLOXDetector:
         self.input_w, self.input_h = input_size
         self.backend = None
 
+        if not model_path or model_path.lower() == 'none':
+            print("[YOLOX] Bypassing YOLOX Perception. Running Pure VLA Vision Reasoning!")
+            return
+
         if model_path.endswith('.engine'):
             if _HAS_TRT:
                 try:
