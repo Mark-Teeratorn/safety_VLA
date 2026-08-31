@@ -200,6 +200,8 @@ class YOLOXDetector:
         return blob, r
 
     def infer(self, img: np.ndarray):
+        if self.backend is None:
+            return [], [], []
         blob, ratio = self.preprocess(img)
 
         if self.backend == "trt_engine":
@@ -207,9 +209,11 @@ class YOLOXDetector:
         elif self.backend == "ort":
             outputs = self.session.run(None, {self.input_name: blob})
             predictions = outputs[0]
-        else:
+        elif self.backend == "cv2_dnn" and hasattr(self, 'net'):
             self.net.setInput(blob)
             predictions = self.net.forward()
+        else:
+            return [], [], []
 
         boxes, scores, class_ids = self.postprocess(predictions[0], ratio, img.shape)
         return boxes, scores, class_ids
