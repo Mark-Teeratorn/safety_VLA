@@ -288,11 +288,22 @@ class YOLOXDetector:
 class CosmosCognitiveReasoner:
     """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing llama-cli matching safe_driving_carla implementation."""
 
-    def __init__(self, model_path: str = '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf'):
-        self.model_path = model_path
+    def __init__(self, model_path: str = None):
+        default_models = [
+            '/home/tesla/models/Qwen3-VL-4B-Instruct-Q4_K_M.gguf',
+            '/home/tesla/models/cosmos_guardrail.gguf',
+            '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf'
+        ]
+        if model_path and os.path.exists(model_path):
+            self.model_path = model_path
+        else:
+            self.model_path = next((m for m in default_models if os.path.exists(m)), default_models[-1])
+
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
-        print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B (Engine: {self.llama_cli})')
+        self.use_gpu = "Q4_K_M" in self.model_path or "guardrail" in self.model_path
+        self.ngl = '99' if self.use_gpu else '0'
+        print(f'[Cognitive Brain] Initialized VLM: {os.path.basename(self.model_path)} (GPU -ngl {self.ngl})')
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
         """Executes llama-cli matching the exact safe_driving_carla inference pattern."""
@@ -304,12 +315,13 @@ class CosmosCognitiveReasoner:
                 self.llama_cli,
                 '-m', self.model_path,
                 '-p', prompt,
+                '-c', '2048',
                 '-n', '64',
-                '-ngl', '0',
-                '-t', '8',
+                '-ngl', self.ngl,
+                '-t', '4',
                 '--no-warmup',
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120.0)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30.0)
             output = proc.stdout
             if output and len(output) > 20:
                 lines = [
