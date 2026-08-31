@@ -294,9 +294,9 @@ class CosmosCognitiveReasoner:
 
     def __init__(self, model_path: str = None):
         default_models = [
-            '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf',
             '/home/tesla/models/cosmos_guardrail.gguf',
-            '/home/tesla/models/Qwen3-VL-4B-Instruct-Q4_K_M.gguf'
+            '/home/tesla/models/Qwen3-VL-4B-Instruct-Q4_K_M.gguf',
+            '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf'
         ]
         if model_path and os.path.exists(model_path):
             self.model_path = model_path
