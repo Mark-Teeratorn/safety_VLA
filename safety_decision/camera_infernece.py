@@ -286,50 +286,30 @@ class YOLOXDetector:
 
 
 class CosmosCognitiveReasoner:
-    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing llama-cli with visual frames."""
+    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing llama-cli matching safe_driving_carla implementation."""
 
     def __init__(self, model_path: str = '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf'):
         self.model_path = model_path
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
+        print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B (Engine: {self.llama_cli})')
 
-        # Auto-detect multimodal projector file (--mmproj)
-        self.mmproj_path = None
-        model_dir = os.path.dirname(self.model_path) if self.model_path else ""
-        if model_dir and os.path.exists(model_dir):
-            for f in os.listdir(model_dir):
-                if "mmproj" in f.lower() and f.endswith(".gguf"):
-                    self.mmproj_path = os.path.join(model_dir, f)
-                    break
-
-        if self.mmproj_path:
-            print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B + mmproj ({self.mmproj_path})')
-        else:
-            print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B (Engine: {self.llama_cli})')
-
-    def _execute_llama(self, cmd: list, default_text: str, timeout: float = 10.0) -> str:
+    def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
+        """Executes llama-cli matching the exact safe_driving_carla inference pattern."""
         if not (self.has_native_cli and os.path.exists(self.model_path)):
-            return default_text
+            return "Cosmos-VLA Model Engine unavailable."
+
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            output = proc.stdout or ""
-            err = proc.stderr or ""
-
-            # Automatic fallback if llama-cli lacks mmproj or visual support
-            if ("Error: image input is not supported" in output or "Error: image input is not supported" in err) and "--image" in cmd:
-                clean_cmd = []
-                skip = False
-                for arg in cmd:
-                    if arg in ["--image", "--mmproj"]:
-                        skip = True
-                        continue
-                    if skip:
-                        skip = False
-                        continue
-                    clean_cmd.append(arg)
-                proc = subprocess.run(clean_cmd, capture_output=True, text=True, timeout=timeout)
-                output = proc.stdout or ""
-
+            cmd = [
+                self.llama_cli,
+                '-m', self.model_path,
+                '-p', prompt,
+                '-n', '128',
+                '-ngl', '99',
+                '--no-warmup'
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5.0)
+            output = proc.stdout
             if output and len(output) > 20:
                 lines = [
                     line.strip() for line in output.splitlines()
@@ -339,24 +319,7 @@ class CosmosCognitiveReasoner:
                     return ' '.join(lines)
         except Exception:
             pass
-        return default_text
-
-    def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
-        """Executes llama-cli with visual --image parameter if mmproj exists, or prompt reasoning."""
-        cmd = [self.llama_cli, '-m', self.model_path]
-
-        # Only pass --image if mmproj projector file is present
-        if self.mmproj_path and os.path.exists(self.mmproj_path):
-            img_path = "/tmp/vla_frame.jpg"
-            try:
-                cv2.imwrite(img_path, frame_bgr)
-                cmd.extend(['--mmproj', self.mmproj_path, '--image', img_path])
-            except Exception:
-                pass
-
-        cmd.extend(['-p', prompt, '-n', '128', '-ngl', '50', '--no-mmap', '--no-warmup'])
-
-        return self._execute_llama(cmd, "Visual CoT: Inspecting camera scene.")
+        return "Visual CoT: Inspecting camera scene."
 
 
 class VLAReasoningEngine:
