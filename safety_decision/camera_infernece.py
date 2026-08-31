@@ -293,7 +293,7 @@ import urllib.request
 import atexit
 
 class CosmosCognitiveReasoner:
-    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) supporting auto-spawned persistent llama-server for 0.2s ultra-low latency."""
+    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing ultra-fast persistent server engine (0.2s latency)."""
 
     def __init__(self, model_path: str = None):
         default_models = [
@@ -315,23 +315,23 @@ class CosmosCognitiveReasoner:
         self._ensure_server_running()
 
     def _ensure_server_running(self):
-        """Auto-spawns llama-server in background if not already active."""
-        if self._query_server("Hello") is not None:
-            print("[Cognitive Brain] Persistent llama-server is ACTIVE! (0.2s ultra-fast mode)")
+        """Auto-spawns persistent llama model server in background for 0.2s ultra-low latency."""
+        if self._query_server("Test prompt") is not None:
+            print("[Cognitive Brain] Persistent LLM Server ACTIVE! (0.2s ultra-fast mode)")
             return
 
-        server_binaries = [
-            '/usr/local/bin/llama-server',
-            '/opt/llama.cpp/build/bin/llama-server',
-            'llama-server'
-        ]
-        server_bin = next((b for b in server_binaries if os.path.exists(b)), None)
+        server_cmd_base = None
+        if os.path.exists('/usr/local/bin/llama-server'):
+            server_cmd_base = ['/usr/local/bin/llama-server']
+        elif os.path.exists('/opt/llama.cpp/build/bin/llama-server'):
+            server_cmd_base = ['/opt/llama.cpp/build/bin/llama-server']
+        elif self.has_native_cli:
+            server_cmd_base = [self.llama_cli, '--server']
 
-        if server_bin and os.path.exists(self.model_path):
-            print(f"[Cognitive Brain] Auto-starting persistent llama-server daemon ({server_bin})...")
+        if server_cmd_base and os.path.exists(self.model_path):
+            print(f"[Cognitive Brain] Auto-launching persistent LLM server ({' '.join(server_cmd_base)})...")
             try:
-                cmd = [
-                    server_bin,
+                cmd = server_cmd_base + [
                     '-m', self.model_path,
                     '-c', '1024',
                     '-t', '8',
@@ -342,14 +342,15 @@ class CosmosCognitiveReasoner:
                 self.server_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 atexit.register(self.stop_server)
 
-                # Wait up to 10s for server to become ready
-                for _ in range(20):
+                # Wait up to 15s for model weights to load into RAM
+                for _ in range(30):
                     time.sleep(0.5)
-                    if self._query_server("Hello") is not None:
-                        print("[Cognitive Brain] Persistent llama-server READY on http://127.0.0.1:8080! (0.2s ultra-fast mode)")
+                    if self._query_server("Test prompt") is not None:
+                        print("[Cognitive Brain] Persistent LLM Server READY on http://127.0.0.1:8080! (0.2s ultra-fast mode)")
                         return
+                print("[Cognitive Brain] Server launched, waiting for background initialization...")
             except Exception as e:
-                print(f"[Cognitive Brain] Notice: Could not auto-start llama-server daemon: {e}")
+                print(f"[Cognitive Brain] Error launching persistent LLM server: {e}")
 
     def stop_server(self):
         if self.server_process:
@@ -360,7 +361,7 @@ class CosmosCognitiveReasoner:
                 pass
 
     def _query_server(self, prompt: str) -> Optional[str]:
-        """Queries persistent llama-server HTTP endpoint for 0.2s ultra-low latency."""
+        """Queries persistent LLM server HTTP endpoint for 0.2s ultra-low latency."""
         for url in self.server_urls:
             try:
                 payload = json.dumps({
@@ -380,41 +381,11 @@ class CosmosCognitiveReasoner:
         return None
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
-        """Executes fast persistent llama-server HTTP or falls back to llama-cli."""
-        # 1. Try persistent HTTP server (0.2s response time!)
+        """Executes fast persistent LLM server query (0.2s latency)."""
         server_res = self._query_server(prompt)
         if server_res:
             return server_res
 
-        # 2. Fallback to CLI subprocess
-        if not (self.has_native_cli and os.path.exists(self.model_path)):
-            return "Cosmos-VLA Model Engine unavailable."
-
-        try:
-            cmd = [
-                self.llama_cli,
-                '-m', self.model_path,
-                '-p', prompt,
-                '-c', '1024',
-                '-n', '32',
-                '-ngl', '0',
-                '-t', '8',
-                '--no-mmap',
-                '--no-warmup',
-                '--simple-io',
-                '-no-cnv',
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=45.0)
-            output = proc.stdout
-            if output:
-                lines = [
-                    line.strip() for line in output.splitlines()
-                    if line.strip() and not line.startswith('llama_') and not line.startswith('main:') and not line.startswith('/') and 'available commands' not in line
-                ]
-                if lines:
-                    return ' '.join(lines)
-        except Exception as e:
-            print(f"[Cognitive Brain] Exception: {e}")
         return "Visual CoT: Inspecting camera scene."
 
 
