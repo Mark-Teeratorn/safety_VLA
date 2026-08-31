@@ -321,7 +321,7 @@ class CosmosCognitiveReasoner:
                     "stop": ["\n\n", "User:"]
                 }).encode('utf-8')
                 req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=3.0) as response:
+                with urllib.request.urlopen(req, timeout=1.0) as response:
                     res_data = json.loads(response.read().decode('utf-8'))
                     text = res_data.get("content", "").strip()
                     if text:
