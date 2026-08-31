@@ -301,9 +301,9 @@ class CosmosCognitiveReasoner:
 
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
-        self.use_gpu = "Q4_K_M" in self.model_path or "guardrail" in self.model_path
-        self.ngl = '99' if self.use_gpu else '0'
-        print(f'[Cognitive Brain] Initialized VLM: {os.path.basename(self.model_path)} (GPU -ngl {self.ngl})')
+        self.use_gpu = False
+        self.ngl = '0'
+        print(f'[Cognitive Brain] Initialized VLM: {os.path.basename(self.model_path)} (CPU Mode: -ngl 0, -t 8)')
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
         """Executes llama-cli matching the exact safe_driving_carla inference pattern."""
@@ -317,8 +317,8 @@ class CosmosCognitiveReasoner:
                 '-p', prompt,
                 '-c', '2048',
                 '-n', '64',
-                '-ngl', self.ngl,
-                '-t', '4',
+                '-ngl', '0',
+                '-t', '8',
                 '--no-warmup',
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30.0)
