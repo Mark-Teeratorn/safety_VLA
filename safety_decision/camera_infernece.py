@@ -289,8 +289,11 @@ class YOLOXDetector:
         return final_boxes[indices], scores[indices], class_ids[indices]
 
 
+import base64
+import urllib.request
+
 class CosmosCognitiveReasoner:
-    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing llama-cli matching safe_driving_carla implementation."""
+    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing vLLM GPU server or llama-cli fallback."""
 
     def __init__(self, model_path: str = None):
         default_models = [
@@ -305,12 +308,51 @@ class CosmosCognitiveReasoner:
 
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
-        self.use_gpu = False
-        self.ngl = '0'
-        print(f'[Cognitive Brain] Initialized Cosmos VLM: {os.path.basename(self.model_path)} (CPU Mode: -ngl 0, -t 8)')
+        self.vllm_url = "http://127.0.0.1:8000/v1/chat/completions"
+        print(f'[Cognitive Brain] Initialized Cosmos VLM: {os.path.basename(self.model_path)}')
+
+    def _query_vllm_server(self, frame_bgr: np.ndarray, prompt: str) -> Optional[str]:
+        """Queries local NVIDIA vLLM GPU container endpoint with camera frame."""
+        try:
+            # Encode frame to JPEG base64 if available
+            content_list = [{"type": "text", "text": prompt}]
+            if frame_bgr is not None and frame_bgr.size > 0:
+                _, buffer = cv2.imencode('.jpg', frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                b64_img = base64.b64encode(buffer).decode('utf-8')
+                content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}})
+
+            payload = json.dumps({
+                "model": "/models/cosmos-reason2-2b",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": content_list
+                    }
+                ],
+                "max_tokens": 64,
+                "temperature": 0.1
+            }).encode('utf-8')
+
+            req = urllib.request.Request(self.vllm_url, data=payload, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=4.0) as response:
+                res_data = json.loads(response.read().decode('utf-8'))
+                choices = res_data.get("choices", [])
+                if choices:
+                    content = choices[0].get("message", {}).get("content", "").strip()
+                    if content:
+                        return content
+        except Exception:
+            pass
+        return None
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
-        """Executes llama-cli matching the exact safe_driving_carla inference pattern."""
+        """Executes vLLM GPU server or falls back to llama-cli."""
+        # 1. Try NVIDIA vLLM GPU Server (sub-second response with camera image)
+        vllm_res = self._query_vllm_server(frame_bgr, prompt)
+        if vllm_res:
+            return vllm_res
+
+        # 2. Fallback to llama-cli subprocess
         if not (self.has_native_cli and os.path.exists(self.model_path)):
             return "Cosmos-VLA Model Engine unavailable."
 
