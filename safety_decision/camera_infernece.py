@@ -339,7 +339,7 @@ class VLAReasoningEngine:
         self.llm_thread.start()
 
     def _vla_llm_worker(self):
-        """Background thread executing llama-cli with --image parameter on Cosmos-Reason2-2B GGUF model."""
+        """Background thread executing llama-cli on Cosmos-Reason2-2B GGUF model."""
         while self.running:
             try:
                 frame_bgr, prompt = self.prompt_queue.get(timeout=0.2)
@@ -347,6 +347,15 @@ class VLAReasoningEngine:
                     llm_cot = self.reasoner.reason_on_image(frame_bgr, prompt)
                     if llm_cot and len(llm_cot) > 10:
                         self.last_decision = f"[VLM CoT]: {llm_cot}"
+                        # Determine risk from CoT for terminal display
+                        cot_upper = llm_cot.upper()
+                        if any(k in cot_upper for k in ["CRITICAL", "EMERGENCY"]):
+                            risk_tag = "CRITICAL"
+                        elif any(k in cot_upper for k in ["WARNING", "WARN", "CAUTION", "SLOW"]):
+                            risk_tag = "WARNING"
+                        else:
+                            risk_tag = "SAFE"
+                        print(f"\n[VLA CoT | {risk_tag}] {llm_cot}\n")
                 self.prompt_queue.task_done()
                 time.sleep(0.3)
             except queue.Empty:
