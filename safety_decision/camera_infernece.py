@@ -320,11 +320,13 @@ class CosmosCognitiveReasoner:
                 '-m', self.model_path,
                 '-p', prompt,
                 '-c', '1024',
-                '-n', '64',
+                '-n', '32',
                 '-ngl', '0',
                 '-t', '8',
                 '--no-mmap',
                 '--no-warmup',
+                '--simple-io',
+                '-no-cnv',
             ]
             proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=45.0)
             output = proc.stdout
