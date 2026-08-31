@@ -305,11 +305,11 @@ class CosmosCognitiveReasoner:
                 '-m', self.model_path,
                 '-p', prompt,
                 '-n', '64',
-                '-ngl', '20',
-                '-t', '4',
+                '-ngl', '0',
+                '-t', '8',
                 '--no-warmup',
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60.0)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120.0)
             output = proc.stdout
             if output and len(output) > 20:
                 lines = [
