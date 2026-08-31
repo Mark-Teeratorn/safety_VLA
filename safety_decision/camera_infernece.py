@@ -338,17 +338,19 @@ class CosmosCognitiveReasoner:
         return default_text
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
-        """Saves frame to /tmp/vla_frame.jpg and executes llama-cli with --image parameter so VLM sees actual camera pixels."""
-        img_path = "/tmp/vla_frame.jpg"
-        try:
-            cv2.imwrite(img_path, frame_bgr)
-        except Exception:
-            pass
-
+        """Executes llama-cli with visual --image parameter if mmproj exists, or prompt reasoning."""
         cmd = [self.llama_cli, '-m', self.model_path]
-        if self.mmproj_path:
-            cmd.extend(['--mmproj', self.mmproj_path])
-        cmd.extend(['--image', img_path, '-p', prompt, '-n', '-1', '-ngl', '99', '--no-warmup'])
+
+        # Only pass --image if mmproj projector file is present
+        if self.mmproj_path and os.path.exists(self.mmproj_path):
+            img_path = "/tmp/vla_frame.jpg"
+            try:
+                cv2.imwrite(img_path, frame_bgr)
+                cmd.extend(['--mmproj', self.mmproj_path, '--image', img_path])
+            except Exception:
+                pass
+
+        cmd.extend(['-p', prompt, '-n', '128', '-ngl', '99', '--no-warmup'])
 
         return self._execute_llama(cmd, "Visual CoT: Inspecting camera scene.")
 
