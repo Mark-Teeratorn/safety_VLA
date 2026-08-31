@@ -319,18 +319,19 @@ class CosmosCognitiveReasoner:
                 self.llama_cli,
                 '-m', self.model_path,
                 '-p', prompt,
-                '-c', '2048',
+                '-c', '1024',
                 '-n', '64',
                 '-ngl', '0',
                 '-t', '8',
+                '--no-mmap',
                 '--no-warmup',
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30.0)
+            proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10.0)
             output = proc.stdout
-            if output and len(output) > 20:
+            if output:
                 lines = [
                     line.strip() for line in output.splitlines()
-                    if line.strip() and not line.startswith('llama_') and not line.startswith('main:')
+                    if line.strip() and not line.startswith('llama_') and not line.startswith('main:') and not line.startswith('/') and 'available commands' not in line
                 ]
                 if lines:
                     return ' '.join(lines)
