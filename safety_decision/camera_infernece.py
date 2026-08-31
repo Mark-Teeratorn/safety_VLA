@@ -294,20 +294,20 @@ class CosmosCognitiveReasoner:
 
     def __init__(self, model_path: str = None):
         default_models = [
-            '/home/tesla/models/Qwen3-VL-4B-Instruct-Q4_K_M.gguf',
+            '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf',
             '/home/tesla/models/cosmos_guardrail.gguf',
-            '/home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf'
+            '/home/tesla/models/Qwen3-VL-4B-Instruct-Q4_K_M.gguf'
         ]
         if model_path and os.path.exists(model_path):
             self.model_path = model_path
         else:
-            self.model_path = next((m for m in default_models if os.path.exists(m)), default_models[-1])
+            self.model_path = next((m for m in default_models if os.path.exists(m)), default_models[0])
 
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
         self.use_gpu = False
         self.ngl = '0'
-        print(f'[Cognitive Brain] Initialized VLM: {os.path.basename(self.model_path)} (CPU Mode: -ngl 0, -t 8)')
+        print(f'[Cognitive Brain] Initialized Cosmos VLM: {os.path.basename(self.model_path)} (CPU Mode: -ngl 0, -t 8)')
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
         """Executes llama-cli matching the exact safe_driving_carla inference pattern."""
@@ -343,14 +343,14 @@ class CosmosCognitiveReasoner:
 class VLAReasoningEngine:
     """Vision-Language-Action (VLA) Safety Assessment & Controller."""
 
-    def __init__(self, cruise_speed: float = 3.0):
+    def __init__(self, cruise_speed: float = 3.0, vlm_model_path: str = None):
         self.cruise_speed = cruise_speed
         self.risk_level = "SAFE"  # SAFE, WARNING, CRITICAL
         self.last_decision = "CLEAR TO PROCEED"
         self.prompt_queue = queue.Queue(maxsize=1)
         self.running = True
 
-        self.reasoner = CosmosCognitiveReasoner()
+        self.reasoner = CosmosCognitiveReasoner(model_path=vlm_model_path)
         self.llm_thread = threading.Thread(target=self._vla_llm_worker, daemon=True)
         self.llm_thread.start()
 
@@ -462,7 +462,7 @@ class VLAReasoningEngine:
 class VLACosmosRealtimePipeline:
     """Real-Time Execution Pipeline."""
 
-    def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447, use_yolo: bool = True):
+    def __init__(self, model_path: str, conf_thresh: float = 0.45, zenoh_port: int = 7447, use_yolo: bool = True, vlm_model: str = None):
         self.use_yolo = use_yolo
         if self.use_yolo:
             self.detector = YOLOXDetector(model_path, conf_thresh=conf_thresh)
@@ -471,7 +471,7 @@ class VLACosmosRealtimePipeline:
             print("=========================================================")
             print("[VLA Cosmos] PURE VLM EVALUATION MODE (YOLO Completely Disabled)")
             print("=========================================================")
-        self.vla_engine = VLAReasoningEngine()
+        self.vla_engine = VLAReasoningEngine(vlm_model_path=vlm_model)
         self.zenoh_port = zenoh_port
         self.running = False
 
@@ -559,6 +559,8 @@ def main():
     parser = argparse.ArgumentParser(description="VLA Cosmos Real-Time Safety Perception")
     parser.add_argument("--model", default="/home/tesla/models/yolox-sPlus-opt.engine",
                         help="Path to YOLOX Engine (.engine) or ONNX (.onnx) model")
+    parser.add_argument("--vlm-model", default=None,
+                        help="Path to VLM model GGUF (e.g. /home/tesla/models/Cosmos-Reason2-2B-BF16-split-00001-of-00002.gguf)")
     parser.add_argument("--camera", choices=["realsense", "usb"], default="realsense",
                         help="Camera input source (realsense or usb)")
     parser.add_argument("--conf", type=float, default=0.45, help="Confidence threshold")
@@ -566,7 +568,7 @@ def main():
     parser.add_argument("--no-yolo", action="store_true", help="Bypass YOLO completely and let Cosmos-Reason2-2B VLM decide 100% on raw camera frames")
     args = parser.parse_args()
 
-    pipeline = VLACosmosRealtimePipeline(args.model, conf_thresh=args.conf, use_yolo=not args.no_yolo)
+    pipeline = VLACosmosRealtimePipeline(args.model, conf_thresh=args.conf, use_yolo=not args.no_yolo, vlm_model=args.vlm_model)
     pipeline.start_zenoh()
 
     if args.camera == "realsense":
