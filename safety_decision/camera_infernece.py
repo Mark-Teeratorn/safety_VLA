@@ -288,14 +288,44 @@ class CosmosCognitiveReasoner:
         self.model_path = model_path
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
-        print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B (Engine: {self.llama_cli})')
+
+        # Auto-detect multimodal projector file (--mmproj)
+        self.mmproj_path = None
+        model_dir = os.path.dirname(self.model_path) if self.model_path else ""
+        if model_dir and os.path.exists(model_dir):
+            for f in os.listdir(model_dir):
+                if "mmproj" in f.lower() and f.endswith(".gguf"):
+                    self.mmproj_path = os.path.join(model_dir, f)
+                    break
+
+        if self.mmproj_path:
+            print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B + mmproj ({self.mmproj_path})')
+        else:
+            print(f'[Cognitive Brain] Reasoner initialized with Cosmos-Reason2-2B (Engine: {self.llama_cli})')
 
     def _execute_llama(self, cmd: list, default_text: str, timeout: float = 10.0) -> str:
         if not (self.has_native_cli and os.path.exists(self.model_path)):
             return default_text
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            output = proc.stdout
+            output = proc.stdout or ""
+            err = proc.stderr or ""
+
+            # Automatic fallback if llama-cli lacks mmproj or visual support
+            if ("Error: image input is not supported" in output or "Error: image input is not supported" in err) and "--image" in cmd:
+                clean_cmd = []
+                skip = False
+                for arg in cmd:
+                    if arg in ["--image", "--mmproj"]:
+                        skip = True
+                        continue
+                    if skip:
+                        skip = False
+                        continue
+                    clean_cmd.append(arg)
+                proc = subprocess.run(clean_cmd, capture_output=True, text=True, timeout=timeout)
+                output = proc.stdout or ""
+
             if output and len(output) > 20:
                 lines = [
                     line.strip() for line in output.splitlines()
@@ -314,7 +344,12 @@ class CosmosCognitiveReasoner:
             cv2.imwrite(img_path, frame_bgr)
         except Exception:
             pass
-        cmd = [self.llama_cli, '-m', self.model_path, '--image', img_path, '-p', prompt, '-n', '-1', '-ngl', '99', '--no-warmup']
+
+        cmd = [self.llama_cli, '-m', self.model_path]
+        if self.mmproj_path:
+            cmd.extend(['--mmproj', self.mmproj_path])
+        cmd.extend(['--image', img_path, '-p', prompt, '-n', '-1', '-ngl', '99', '--no-warmup'])
+
         return self._execute_llama(cmd, "Visual CoT: Inspecting camera scene.")
 
 
