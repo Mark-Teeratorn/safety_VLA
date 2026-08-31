@@ -354,7 +354,7 @@ class CosmosCognitiveReasoner:
             except Exception:
                 pass
 
-        cmd.extend(['-p', prompt, '-n', '128', '-ngl', '99', '--no-warmup'])
+        cmd.extend(['-p', prompt, '-n', '128', '-ngl', '50', '--no-mmap', '--no-warmup'])
 
         return self._execute_llama(cmd, "Visual CoT: Inspecting camera scene.")
 
@@ -383,6 +383,7 @@ class VLAReasoningEngine:
                     if llm_cot and len(llm_cot) > 10:
                         self.last_decision = f"[VLM CoT]: {llm_cot}"
                 self.prompt_queue.task_done()
+                time.sleep(0.3)
             except queue.Empty:
                 continue
             except Exception:
