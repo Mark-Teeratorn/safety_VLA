@@ -326,7 +326,7 @@ class CosmosCognitiveReasoner:
                 '--no-mmap',
                 '--no-warmup',
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10.0)
+            proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=45.0)
             output = proc.stdout
             if output:
                 lines = [
@@ -373,7 +373,7 @@ class VLAReasoningEngine:
                             risk_tag = "SAFE"
                         print(f"\n[VLA CoT | {risk_tag}] {llm_cot}\n")
                 self.prompt_queue.task_done()
-                time.sleep(0.3)
+                time.sleep(1.5)
             except queue.Empty:
                 continue
             except Exception:
