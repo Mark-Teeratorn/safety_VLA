@@ -289,11 +289,8 @@ class YOLOXDetector:
         return final_boxes[indices], scores[indices], class_ids[indices]
 
 
-import urllib.request
-import atexit
-
 class CosmosCognitiveReasoner:
-    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing ultra-fast persistent server engine (0.2s latency)."""
+    """Cognitive Reasoning Layer (Cosmos-Reason2-2B) executing llama-cli matching safe_driving_carla implementation."""
 
     def __init__(self, model_path: str = None):
         default_models = [
@@ -308,84 +305,40 @@ class CosmosCognitiveReasoner:
 
         self.llama_cli = '/usr/local/bin/llama-cli'
         self.has_native_cli = os.path.exists(self.llama_cli)
-        self.server_urls = ["http://127.0.0.1:8080/completion", "http://127.0.0.1:8089/completion"]
-        self.server_process = None
-
-        print(f'[Cognitive Brain] Initialized Cosmos VLM: {os.path.basename(self.model_path)}')
-        self._ensure_server_running()
-
-    def _ensure_server_running(self):
-        """Auto-spawns persistent llama model server in background for 0.2s ultra-low latency."""
-        if self._query_server("Test prompt") is not None:
-            print("[Cognitive Brain] Persistent LLM Server ACTIVE! (0.2s ultra-fast mode)")
-            return
-
-        server_cmd_base = None
-        if os.path.exists('/usr/local/bin/llama-server'):
-            server_cmd_base = ['/usr/local/bin/llama-server']
-        elif os.path.exists('/opt/llama.cpp/build/bin/llama-server'):
-            server_cmd_base = ['/opt/llama.cpp/build/bin/llama-server']
-        elif self.has_native_cli:
-            server_cmd_base = [self.llama_cli, '--server']
-
-        if server_cmd_base and os.path.exists(self.model_path):
-            print(f"[Cognitive Brain] Auto-launching persistent LLM server ({' '.join(server_cmd_base)})...")
-            try:
-                cmd = server_cmd_base + [
-                    '-m', self.model_path,
-                    '-c', '1024',
-                    '-t', '8',
-                    '-ngl', '0',
-                    '--port', '8080',
-                    '--no-mmap'
-                ]
-                self.server_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                atexit.register(self.stop_server)
-
-                # Wait up to 15s for model weights to load into RAM
-                for _ in range(30):
-                    time.sleep(0.5)
-                    if self._query_server("Test prompt") is not None:
-                        print("[Cognitive Brain] Persistent LLM Server READY on http://127.0.0.1:8080! (0.2s ultra-fast mode)")
-                        return
-                print("[Cognitive Brain] Server launched, waiting for background initialization...")
-            except Exception as e:
-                print(f"[Cognitive Brain] Error launching persistent LLM server: {e}")
-
-    def stop_server(self):
-        if self.server_process:
-            try:
-                self.server_process.terminate()
-                self.server_process.wait(timeout=2.0)
-            except Exception:
-                pass
-
-    def _query_server(self, prompt: str) -> Optional[str]:
-        """Queries persistent LLM server HTTP endpoint for 0.2s ultra-low latency."""
-        for url in self.server_urls:
-            try:
-                payload = json.dumps({
-                    "prompt": prompt,
-                    "n_predict": 32,
-                    "temperature": 0.1,
-                    "stop": ["\n\n", "User:"]
-                }).encode('utf-8')
-                req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req, timeout=1.0) as response:
-                    res_data = json.loads(response.read().decode('utf-8'))
-                    text = res_data.get("content", "").strip()
-                    if text:
-                        return text
-            except Exception:
-                continue
-        return None
+        self.use_gpu = False
+        self.ngl = '0'
+        print(f'[Cognitive Brain] Initialized Cosmos VLM: {os.path.basename(self.model_path)} (CPU Mode: -ngl 0, -t 8)')
 
     def reason_on_image(self, frame_bgr: np.ndarray, prompt: str) -> str:
-        """Executes fast persistent LLM server query (0.2s latency)."""
-        server_res = self._query_server(prompt)
-        if server_res:
-            return server_res
+        """Executes llama-cli matching the exact safe_driving_carla inference pattern."""
+        if not (self.has_native_cli and os.path.exists(self.model_path)):
+            return "Cosmos-VLA Model Engine unavailable."
 
+        try:
+            cmd = [
+                self.llama_cli,
+                '-m', self.model_path,
+                '-p', prompt,
+                '-c', '512',
+                '-n', '16',
+                '-ngl', '0',
+                '-t', '6',
+                '--no-mmap',
+                '--no-warmup',
+                '--simple-io',
+                '-no-cnv',
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=45.0)
+            output = proc.stdout
+            if output:
+                lines = [
+                    line.strip() for line in output.splitlines()
+                    if line.strip() and not line.startswith('llama_') and not line.startswith('main:') and not line.startswith('/') and 'available commands' not in line
+                ]
+                if lines:
+                    return ' '.join(lines)
+        except Exception as e:
+            print(f"[Cognitive Brain] Exception: {e}")
         return "Visual CoT: Inspecting camera scene."
 
 
@@ -410,11 +363,11 @@ class VLAReasoningEngine:
                 frame_bgr, prompt = self.prompt_queue.get(timeout=0.2)
                 if self.reasoner:
                     llm_cot = self.reasoner.reason_on_image(frame_bgr, prompt)
-                    if llm_cot and len(llm_cot) > 10:
+                    if llm_cot and len(llm_cot) > 5:
                         self.last_decision = f"[VLM CoT]: {llm_cot}"
                         # Determine risk from CoT for terminal display
                         cot_upper = llm_cot.upper()
-                        if any(k in cot_upper for k in ["CRITICAL", "EMERGENCY"]):
+                        if any(k in cot_upper for k in ["CRITICAL", "EMERGENCY", "STOP"]):
                             risk_tag = "CRITICAL"
                         elif any(k in cot_upper for k in ["WARNING", "WARN", "CAUTION", "SLOW"]):
                             risk_tag = "WARNING"
@@ -422,7 +375,7 @@ class VLAReasoningEngine:
                             risk_tag = "SAFE"
                         print(f"\n[VLA CoT | {risk_tag}] {llm_cot}\n")
                 self.prompt_queue.task_done()
-                time.sleep(1.5)
+                time.sleep(1.0)
             except queue.Empty:
                 continue
             except Exception:
@@ -430,20 +383,15 @@ class VLAReasoningEngine:
 
     def construct_vla_prompt(self, yolo_hints: list) -> str:
         """Constructs an efficient VLM prompt focused on road occupancy and safety decisions."""
-        hint_lines = [f"- {d['label']} at {[int(v) for v in d['bbox']]}" for d in yolo_hints if not d.get("is_novel")]
-        hints_str = "\n".join(hint_lines) if hint_lines else "- None"
+        hint_lines = [f"- {d['label']}" for d in yolo_hints if not d.get("is_novel")]
+        hints_str = ", ".join(hint_lines) if hint_lines else "None"
         prev_cot = getattr(self, 'last_decision', 'CLEAR TO PROCEED')
 
         return (
-            f"You are an autonomous driving vision system. Focus on the road image ahead.\n\n"
-            f"1. COGNITIVE PERCEPTION: Identify what object is on the road in front of our car (e.g., 'On the road in front of our car is a [object]' or 'No [objects]').\n"
-            f"2. VLA REASONING: Determine if the [object] is hard blocking our driving path or if it is safe to proceed.\n"
-            f"3. DECISION: End with exactly one rating on its own line:\n"
-            f"   - CRITICAL (road hard blocked, must stop)\n"
-            f"   - WARNING (hazard near lane, slow down)\n"
-            f"   - SAFE (road clear, safe to proceed)\n\n"
-            f"YOLO Hints:\n{hints_str}\n"
-            f"Previous Thought: {prev_cot}"
+            f"Autonomous Driving Vision Safety System.\n"
+            f"Detected Objects: {hints_str}.\n"
+            f"Prev State: {prev_cot}.\n"
+            f"Evaluate front road hazard and output exactly one rating: CRITICAL, WARNING, or SAFE."
         )
 
     def evaluate(self, raw_frame_bgr: np.ndarray, yolo_hints: list) -> dict:
