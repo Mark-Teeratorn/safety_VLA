@@ -363,7 +363,7 @@ class CosmosCognitiveReasoner:
                 '-p', prompt,
                 '-c', '512',
                 '-n', '16',
-                '-ngl', '0',
+                '-ngl', '99',
                 '-t', '6',
                 '--no-mmap',
                 '--no-warmup',
@@ -610,23 +610,17 @@ def main():
     pipeline = VLACosmosRealtimePipeline(args.model, conf_thresh=args.conf, use_yolo=not args.no_yolo, vlm_model=args.vlm_model)
     pipeline.start_zenoh()
 
-    if args.camera == "realsense" and _HAS_REALSENSE:
-        try:
-            print("[VLA Cosmos] Starting RealSense Camera Pipeline (1280x720 HD)...")
-            rs_pipeline = rs.pipeline()
-            cfg = rs.config()
-            cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
-            rs_pipeline.start(cfg)
-            use_rs = True
-        except Exception as e:
-            print(f"[VLA Cosmos] RealSense hardware not detected ({e}). Falling back to USB Camera (/dev/video0)...")
-            use_rs = False
-            args.camera = "usb"
+    if args.camera == "realsense":
+        if not _HAS_REALSENSE:
+            print("[VLA Cosmos] ERROR: pyrealsense2 is not installed.")
+            return
+        print("[VLA Cosmos] Starting RealSense Camera Pipeline (1280x720 HD)...")
+        rs_pipeline = rs.pipeline()
+        cfg = rs.config()
+        cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
+        rs_pipeline.start(cfg)
     else:
-        use_rs = False
-
-    if not use_rs:
-        print("[VLA Cosmos] Starting USB Camera /dev/video0 (1280x720 HD)...")
+        print("[VLA Cosmos] Starting USB Camera (1280x720 HD)...")
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -639,7 +633,7 @@ def main():
 
     try:
         while True:
-            if use_rs:
+            if args.camera == "realsense":
                 frames = rs_pipeline.wait_for_frames()
                 color_frame = frames.get_color_frame()
                 if not color_frame:
