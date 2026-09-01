@@ -20,14 +20,14 @@ try:
 except ImportError:
     _HAS_FASTVLM = False
 
-MODEL_PATH = "apple/FastVLM-7B"
+MODEL_PATH = "apple/FastVLM-0.5B"
 
 class FastVLMLocalGUI:
     def __init__(self):
         print("[FastVLM Local GUI] Loading Apple FastVLM model onto AGX Orin GPU...")
         t0 = time.time()
         self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
-            MODEL_PATH, None, "FastVLM-7B", device_map="cuda"
+            MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
         print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE ✅"
