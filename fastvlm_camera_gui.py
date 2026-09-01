@@ -25,9 +25,9 @@ class FastVLMLocalGUI:
         t0 = time.time()
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH, trust_remote_code=True, torch_dtype=torch.float16, device_map="cuda"
+            MODEL_PATH, trust_remote_code=True, torch_dtype=torch.float16, device_map="cuda", revision="2024-08-26"
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, revision="2024-08-26")
 
         print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE"
