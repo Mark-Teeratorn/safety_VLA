@@ -30,7 +30,14 @@ class FastVLMLocalGUI:
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
         
-        # Ensure image_mean exists on processor if needed by process_images
+        # Retrieve native FastViTHD image_processor directly from vision tower
+        if self.image_processor is None and hasattr(self.model, "get_vision_tower"):
+            vision_tower = self.model.get_vision_tower()
+            if not vision_tower.is_loaded:
+                vision_tower.load_model()
+            self.image_processor = getattr(vision_tower, "image_processor", None)
+        
+        # Fallback image_mean if missing
         if self.image_processor is not None and getattr(self.image_processor, 'image_mean', None) is None:
             self.image_processor.image_mean = [0.485, 0.456, 0.406]
 
