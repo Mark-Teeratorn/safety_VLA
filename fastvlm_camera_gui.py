@@ -44,7 +44,7 @@ class FastVLMLocalGUI:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
         # Apple FastVLM-0.5B is trained on LLaVA-v1 format (USER: <image>\n... ASSISTANT:)
-        prompt = f"USER: {DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead. Reply with SAFE, WARNING, or CRITICAL.\nASSISTANT:"
+        prompt = f"USER: {DEFAULT_IMAGE_TOKEN}\nWhat are you seeing?\nASSISTANT:"
 
         input_ids = tokenizer_image_token(
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
