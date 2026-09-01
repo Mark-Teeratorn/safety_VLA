@@ -30,17 +30,25 @@ class FastVLMLocalGUI:
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
         
-        if self.image_processor is None:
-            from transformers import CLIPImageProcessor
-            try:
-                vt = getattr(self.model.config, 'mm_vision_tower', "openai/clip-vit-large-patch14-336")
-                self.image_processor = CLIPImageProcessor.from_pretrained(vt)
-            except Exception as e:
-                print(f"[FastVLM Local GUI] Warning: Could not load vision tower processor, defaulting to CLIP: {e}")
-                self.image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
-        
-        if getattr(self.image_processor, 'image_mean', None) is None:
-            self.image_processor.image_mean = [0.48145466, 0.4578275, 0.40821073]
+        if self.image_processor is None or "CLIPImageProcessor" in str(type(self.image_processor)):
+            print("[FastVLM Local GUI] Warning: Using Custom MobileCLIP 1024x1024 Processor for FastVLM")
+            class MobileCLIPProcessor:
+                def __init__(self):
+                    self.image_mean = [0.485, 0.456, 0.406]
+                    self.image_std = [0.229, 0.224, 0.225]
+                    self.size = {"height": 1024, "width": 1024}
+                def preprocess(self, images, return_tensors='pt', **kwargs):
+                    import torchvision.transforms as T
+                    transform = T.Compose([
+                        T.Resize((1024, 1024), interpolation=T.InterpolationMode.BICUBIC),
+                        T.ToTensor(),
+                        T.Normalize(self.image_mean, self.image_std)
+                    ])
+                    if not isinstance(images, list):
+                        images = [images]
+                    tensors = torch.stack([transform(img) for img in images])
+                    return {"pixel_values": tensors}
+            self.image_processor = MobileCLIPProcessor()
             
         print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE ✅"
