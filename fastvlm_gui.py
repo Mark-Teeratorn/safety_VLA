@@ -4,11 +4,17 @@ FastVLM Live Interactive Web UI with Real-Time Inference Latency Benchmarking.
 Displays model response, visual safety decision, and exact GPU inference time (ms) & FPS.
 """
 
+import os
 import time
 import torch
 import gradio as gr
 from PIL import Image
 import numpy as np
+
+# Disable Gradio proxy health check restrictions
+os.environ["GRADIO_SERVER_NAME"] = "0.0.0.0"
+os.environ["GRADIO_SERVER_PORT"] = "7860"
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
 
 # FastVLM / LLaVA imports
 try:
@@ -100,4 +106,4 @@ with gr.Blocks(title="Apple FastVLM Real-Time Safety Benchmarking UI", theme=gr.
     )
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, show_api=False)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, show_api=False, inbrowser=False)
