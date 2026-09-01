@@ -29,8 +29,20 @@ class FastVLMLocalGUI:
         self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
-        if self.image_processor is not None and not hasattr(self.image_processor, 'image_mean'):
+        
+        if self.image_processor is None:
+            from transformers import AutoImageProcessor
+            try:
+                self.image_processor = AutoImageProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+            except Exception as e:
+                print(f"[FastVLM Local GUI] Warning: Could not load image processor: {e}")
+                class DummyProcessor:
+                    pass
+                self.image_processor = DummyProcessor()
+        
+        if not hasattr(self.image_processor, 'image_mean'):
             self.image_processor.image_mean = [0.48145466, 0.4578275, 0.40821073]
+            
         print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE ✅"
         self.latency_ms = 0.0
