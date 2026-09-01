@@ -40,7 +40,7 @@ class FastVLMLocalGUI:
                     pass
                 self.image_processor = DummyProcessor()
         
-        if not hasattr(self.image_processor, 'image_mean'):
+        if getattr(self.image_processor, 'image_mean', None) is None:
             self.image_processor.image_mean = [0.48145466, 0.4578275, 0.40821073]
             
         print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
@@ -106,17 +106,33 @@ def main():
 
     engine = FastVLMLocalGUI()
 
-    # OpenCV Camera / Synthetic Stream
-    cap = cv2.VideoCapture(0)
-    if cap.isOpened():
-        print("[FastVLM GUI] Connected to USB Camera /dev/video0...")
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    else:
-        print("[FastVLM GUI] No physical camera found. Using Synthetic HD Road Camera Stream...")
-        cap = None
+    # Try RealSense First
+    use_rs = False
+    rs_pipeline = None
+    try:
+        import pyrealsense2 as rs
+        print("[FastVLM GUI] Connecting to RealSense Camera...")
+        rs_pipeline = rs.pipeline()
+        cfg = rs.config()
+        cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
+        rs_pipeline.start(cfg)
+        use_rs = True
+        print("[FastVLM GUI] RealSense Pipeline Started successfully!")
+    except Exception as e:
+        print(f"[FastVLM GUI] RealSense failed: {e}. Trying USB/Synthetic...")
 
-    win_name = "Apple FastVLM-7B Real-Time GPU Benchmark (HD 1280x720)"
+    cap = None
+    if not use_rs:
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            print("[FastVLM GUI] Connected to USB Camera /dev/video0...")
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        else:
+            print("[FastVLM GUI] No physical camera found. Using Synthetic HD Road Camera Stream...")
+            cap = None
+
+    win_name = "Apple FastVLM-0.5B Real-Time GPU Benchmark (HD 1280x720)"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, 1280, 720)
 
@@ -124,7 +140,15 @@ def main():
     try:
         while True:
             frame_count += 1
-            if cap and cap.isOpened():
+            frame_bgr = None
+            
+            if use_rs:
+                frames = rs_pipeline.wait_for_frames()
+                color_frame = frames.get_color_frame()
+                if not color_frame:
+                    continue
+                frame_bgr = np.asanyarray(color_frame.get_data())
+            elif cap and cap.isOpened():
                 ret, frame_bgr = cap.read()
                 if not ret:
                     continue
@@ -141,16 +165,20 @@ def main():
                 time.sleep(0.03)
 
             # Run inference every 5 frames for continuous smooth display
-            if frame_count % 5 == 1:
+            if frame_count % 5 == 1 and frame_bgr is not None:
                 engine.infer(frame_bgr)
 
-            frame_hud = engine.render_hud(frame_bgr)
-            cv2.imshow(win_name, frame_hud)
+            if frame_bgr is not None:
+                frame_hud = engine.render_hud(frame_bgr)
+                cv2.imshow(win_name, frame_hud)
+            
             if cv2.waitKey(1) == ord('q'):
                 break
     except KeyboardInterrupt:
         pass
     finally:
+        if use_rs and rs_pipeline:
+            rs_pipeline.stop()
         if cap:
             cap.release()
         cv2.destroyAllWindows()
