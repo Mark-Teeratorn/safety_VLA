@@ -30,13 +30,33 @@ class FastVLMLocalGUI:
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
         
+        # Force tie word embeddings for Qwen2 / FastVLM-0.5B
+        if hasattr(self.model, "tie_weights"):
+            self.model.tie_weights()
+
+        try:
+            lm_head_w = self.model.get_output_embeddings().weight
+            embed_w = self.model.get_input_embeddings().weight
+            is_tied = torch.equal(lm_head_w, embed_w)
+            print(f"[DEBUG FastVLM] tie_word_embeddings config: {getattr(self.model.config, 'tie_word_embeddings', None)}")
+            print(f"[DEBUG FastVLM] lm_head == embed_tokens (tied): {is_tied}")
+            print(f"[DEBUG FastVLM] lm_head weight stats - mean: {lm_head_w.mean().item():.5f}, std: {lm_head_w.std().item():.5f}")
+            print(f"[DEBUG FastVLM] embed_tokens weight stats - mean: {embed_w.mean().item():.5f}, std: {embed_w.std().item():.5f}")
+
+            if not is_tied:
+                print("[DEBUG FastVLM] Explicitly tying output embeddings to input embeddings...")
+                self.model.set_output_embeddings(self.model.get_input_embeddings())
+                print(f"[DEBUG FastVLM] Re-verify tie: {torch.equal(self.model.get_output_embeddings().weight, embed_w)}")
+        except Exception as e:
+            print(f"[DEBUG FastVLM] Weight tie check warning: {e}")
+
         # Retrieve native FastViTHD image_processor directly from vision tower
         if self.image_processor is None and hasattr(self.model, "get_vision_tower"):
             vision_tower = self.model.get_vision_tower()
             if not vision_tower.is_loaded:
                 vision_tower.load_model()
             self.image_processor = getattr(vision_tower, "image_processor", None)
-        
+
         # Fallback image_mean if missing
         if self.image_processor is not None and getattr(self.image_processor, 'image_mean', None) is None:
             self.image_processor.image_mean = [0.485, 0.456, 0.406]
