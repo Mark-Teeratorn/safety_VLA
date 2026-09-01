@@ -82,18 +82,6 @@ class FastVLMLocalGUI:
         self.fps = 0.0
         self.reason_text = "Initializing FastVLM..."
 
-        # Execute CUDA Warm-up Inference Pass
-        self.warmup()
-
-    def warmup(self):
-        """Run one dummy inference to force all lazy CUDA init / async copies to settle."""
-        print("[FastVLM Local GUI] Warming up model (discarding dummy first pass)...")
-        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-        torch.cuda.synchronize()
-        _ = self.infer(dummy)
-        torch.cuda.synchronize()
-        print("[FastVLM Local GUI] Warm-up complete.")
-
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
@@ -125,20 +113,31 @@ class FastVLMLocalGUI:
         else:
             image_tensor = image_tensor.to(device="cuda", dtype=model_dtype)
 
-        # GPU Memory Watch Telemetry
-        if not hasattr(self, "_frame_n"):
-            self._frame_n = 0
-        self._frame_n += 1
-        alloc = torch.cuda.memory_allocated() / 1e6
-        reserv = torch.cuda.memory_reserved() / 1e6
-        print(f"[DEBUG FastVLM] Frame {self._frame_n} — GPU Alloc: {alloc:.1f}MB | Reserved: {reserv:.1f}MB")
+        # Explicit multimodal merge — do NOT let generate() merge implicitly
+        attention_mask = torch.ones_like(input_ids, dtype=torch.bool).cuda()
+        with torch.inference_mode():
+            (
+                _input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels,
+            ) = self.model.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                None,
+                attention_mask,
+                None,
+                None,
+                image_tensor,
+                image_sizes=[pil_img.size],
+            )
 
         t_start = time.time()
         with torch.inference_mode():
             output_ids = self.model.generate(
-                input_ids,
-                images=image_tensor,
-                image_sizes=[pil_img.size],
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
                 max_new_tokens=64,
                 do_sample=False,
                 use_cache=True,
@@ -146,12 +145,8 @@ class FastVLMLocalGUI:
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        new_tokens = output_ids[0][input_ids.shape[1]:]
-        response_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-
-        if not response_text:
-            response_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
-
+        # NOTE: with inputs_embeds, output_ids contains ONLY new tokens (no prompt to slice)
+        response_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         print(f"[FastVLM {self.latency_ms:.0f}ms] → {response_text}")
 
         resp_upper = response_text.upper()
