@@ -29,7 +29,8 @@ class FastVLMLocalGUI:
         self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
-        
+        torch.cuda.synchronize()
+
         # --- Diagnostics only. No weight mutation until we know which case we're in. ---
         try:
             lm_head_w = self.model.get_output_embeddings().weight
@@ -80,6 +81,18 @@ class FastVLMLocalGUI:
         self.latency_ms = 0.0
         self.fps = 0.0
         self.reason_text = "Initializing FastVLM..."
+
+        # Execute CUDA Warm-up Inference Pass
+        self.warmup()
+
+    def warmup(self):
+        """Run one dummy inference to force all lazy CUDA init / async copies to settle."""
+        print("[FastVLM Local GUI] Warming up model (discarding dummy first pass)...")
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        torch.cuda.synchronize()
+        _ = self.infer(dummy)
+        torch.cuda.synchronize()
+        print("[FastVLM Local GUI] Warm-up complete.")
 
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
