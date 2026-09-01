@@ -24,9 +24,10 @@ class FastVLMLocalGUI:
         print("[Moondream2 Local GUI] Loading vikhyatk/moondream2 onto AGX Orin GPU...")
         t0 = time.time()
 
-        # Moondream2 activations overflow in float16, causing gibberish text.
-        # Use bfloat16 (Ampere/Orin native) or float32.
-        load_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+        # Force float32. JetPack 5/6 often has hidden bugs with bfloat16 and float16 
+        # on certain PyTorch builds that corrupt the weights and cause gibberish.
+        # Moondream2 is only 1.86B params, so FP32 easily fits in Orin memory (~7.5GB).
+        load_dtype = torch.float32
         
         # Use newer 2025 revision because the 2024 one breaks on transformers >= 4.50
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -49,7 +50,8 @@ class FastVLMLocalGUI:
         with torch.inference_mode():
             response_text = self.model.query(
                 image=pil_img, 
-                question="What do you see?"
+                question="What do you see?",
+                settings={"max_tokens": 64, "temperature": 0.0}
             )["answer"]
             
         self.latency_ms = (time.time() - t_start) * 1000
