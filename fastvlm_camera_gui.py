@@ -84,15 +84,8 @@ class FastVLMLocalGUI:
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
-        # 1. Conversation Template (Qwen2 / ChatML for FastVLM)
         from llava.conversation import conv_templates
-        if "qwen_2" in conv_templates:
-            template_name = "qwen_2"
-        elif "qwen_1_5" in conv_templates:
-            template_name = "qwen_1_5"
-        else:
-            template_name = "v1"
-
+        template_name = "qwen_2" if "qwen_2" in conv_templates else ("qwen_1_5" if "qwen_1_5" in conv_templates else "v1")
         conv = conv_templates[template_name].copy()
         conv.append_message(conv.roles[0], f"{DEFAULT_IMAGE_TOKEN}\nWhat are you seeing?")
         conv.append_message(conv.roles[1], None)
@@ -102,7 +95,6 @@ class FastVLMLocalGUI:
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
         ).unsqueeze(0).cuda()
 
-        # 2. Image Preprocessing
         if self.image_processor is not None:
             image_tensor = process_images([pil_img], self.image_processor, self.model.config)
         else:
@@ -114,62 +106,19 @@ class FastVLMLocalGUI:
             ])
             image_tensor = _tf(pil_img).unsqueeze(0)
 
-        # 3. Match Dtype to Model Parameters
         model_dtype = next(self.model.parameters()).dtype
         if isinstance(image_tensor, list):
             image_tensor = [img.to(device="cuda", dtype=model_dtype) for img in image_tensor]
         else:
             image_tensor = image_tensor.to(device="cuda", dtype=model_dtype)
 
-        # Debug check once
-        if not hasattr(self, "_dtype_checked"):
-            self._dtype_checked = True
-            print(f"[DEBUG FastVLM] Conv template: {template_name}")
-            print(f"[DEBUG FastVLM] Model dtype: {model_dtype}")
-            img_dt = image_tensor[0].dtype if isinstance(image_tensor, list) else image_tensor.dtype
-            print(f"[DEBUG FastVLM] Image tensor dtype: {img_dt}")
-            has_nan = any(torch.isnan(t).any().item() for t in image_tensor) if isinstance(image_tensor, list) else torch.isnan(image_tensor).any().item()
-            print(f"[DEBUG FastVLM] Image tensor has NaN: {has_nan}")
-
-        # Single-run multimodal merge isolation diagnostic
-        if not hasattr(self, "_merge_diagnosed"):
-            self._merge_diagnosed = True
-            print(f"[DEBUG FastVLM] Model class: {type(self.model)}")
-            print(f"[DEBUG FastVLM] input_ids shape: {input_ids.shape}, contains IMAGE_TOKEN_INDEX: {(input_ids == IMAGE_TOKEN_INDEX).sum().item()} times")
-
-            if hasattr(self.model, "prepare_inputs_labels_for_multimodal"):
-                try:
-                    with torch.inference_mode():
-                        (
-                            _input_ids,
-                            position_ids,
-                            attention_mask,
-                            past_key_values,
-                            inputs_embeds,
-                            labels,
-                        ) = self.model.prepare_inputs_labels_for_multimodal(
-                            input_ids,
-                            None,   # position_ids
-                            None,   # attention_mask
-                            None,   # past_key_values
-                            None,   # labels
-                            image_tensor,
-                            image_sizes=[pil_img.size],
-                        )
-                    print(f"[DEBUG FastVLM] inputs_embeds shape after merge: {inputs_embeds.shape}")
-                    print(f"[DEBUG FastVLM] inputs_embeds has NaN: {torch.isnan(inputs_embeds).any().item()}")
-                    print(f"[DEBUG FastVLM] inputs_embeds mean/std: {inputs_embeds.mean().item():.5f} / {inputs_embeds.std().item():.5f}")
-
-                    with torch.inference_mode():
-                        out = self.model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
-                    last_logits = out.logits[0, -1]
-                    top5 = torch.topk(last_logits, 5)
-                    print(f"[DEBUG FastVLM] Top-5 next-token ids (raw forward): {top5.indices.tolist()}")
-                    print(f"[DEBUG FastVLM] Top-5 decoded: {[self.tokenizer.decode([t]) for t in top5.indices.tolist()]}")
-                except Exception as e:
-                    print(f"[DEBUG FastVLM] Multimodal merge diagnostic error: {e}")
-            else:
-                print("[DEBUG FastVLM] WARNING: model has no prepare_inputs_labels_for_multimodal — generate() is likely NOT merging images at all.")
+        # GPU Memory Watch Telemetry
+        if not hasattr(self, "_frame_n"):
+            self._frame_n = 0
+        self._frame_n += 1
+        alloc = torch.cuda.memory_allocated() / 1e6
+        reserv = torch.cuda.memory_reserved() / 1e6
+        print(f"[DEBUG FastVLM] Frame {self._frame_n} — GPU Alloc: {alloc:.1f}MB | Reserved: {reserv:.1f}MB")
 
         t_start = time.time()
         with torch.inference_mode():
@@ -179,15 +128,10 @@ class FastVLMLocalGUI:
                 image_sizes=[pil_img.size],
                 max_new_tokens=64,
                 do_sample=False,
+                use_cache=True,
             )
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
-
-        # Raw Token Debugging
-        raw_decode = self.tokenizer.decode(output_ids[0], skip_special_tokens=False)
-        if not hasattr(self, "_raw_printed"):
-            self._raw_printed = True
-            print(f"[DEBUG FastVLM] Raw output sequence: {repr(raw_decode)}")
 
         new_tokens = output_ids[0][input_ids.shape[1]:]
         response_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
