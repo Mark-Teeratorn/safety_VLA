@@ -28,10 +28,10 @@ class FastVLMLocalGUI:
         # Use bfloat16 (Ampere/Orin native) or float32.
         load_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
         
+        # Use newer 2025 revision because the 2024 one breaks on transformers >= 4.50
         self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH, trust_remote_code=True, revision="2024-08-26"
+            MODEL_PATH, trust_remote_code=True, revision="2025-01-09"
         ).to(device="cuda", dtype=load_dtype)
-        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, revision="2024-08-26")
 
         print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE"
@@ -44,15 +44,10 @@ class FastVLMLocalGUI:
 
         t_start = time.time()
         with torch.inference_mode():
-            enc_image = self.model.encode_image(pil_img)
-            response_text = self.model.answer_question(
-                enc_image, 
-                "What do you see?", 
-                self.tokenizer,
-                max_new_tokens=64,
-                repetition_penalty=1.2,
-                do_sample=False
-            )
+            response_text = self.model.query(
+                image=pil_img, 
+                question="What do you see?"
+            )["answer"]
             
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
