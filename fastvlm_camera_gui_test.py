@@ -26,7 +26,7 @@ class FastVLMLocalGUI:
 
         # Force float32. JetPack PyTorch builds have known NaN bugs with float16/bfloat16
         # on certain transformer layers. FP32 guarantees numerical stability on Orin.
-        load_dtype = torch.int8
+        load_dtype = torch.float8_e4m3fn
         
         # Use the 2024-08-26 revision because it uses standard HuggingFace components,
         # whereas the 2025 revision uses custom CUDA/compile code that breaks on Orin.
