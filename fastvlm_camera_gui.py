@@ -50,7 +50,10 @@ class FastVLMLocalGUI:
 
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-        prompt = f"{DEFAULT_IMAGE_TOKEN}\nYou are an autonomous driving vision system. Assess road safety ahead: SAFE, WARNING, or CRITICAL."
+        
+        # FastVLM-0.5B is based on Qwen2. We MUST use ChatML format!
+        prompt = f"<|im_start|>system\nYou are an autonomous driving vision system.<|im_end|>\n<|im_start|>user\n{DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead: SAFE, WARNING, or CRITICAL.<|im_end|>\n<|im_start|>assistant\n"
+        
         input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
         image_tensor = process_images([pil_img], self.image_processor, self.model.config)[0].unsqueeze(0).half().cuda()
 
@@ -65,7 +68,12 @@ class FastVLMLocalGUI:
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        response_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+        # Decode only the newly generated tokens
+        generated_ids = output_ids[0][input_ids.shape[1]:]
+        response_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        
+        print(f"[FastVLM GPU {self.latency_ms:.1f}ms] Output: {response_text}")
+
         resp_upper = response_text.upper()
         if "CRITICAL" in resp_upper or "HAZARD" in resp_upper or "STOP" in resp_upper:
             self.risk_level = "CRITICAL 🚨"
@@ -79,23 +87,27 @@ class FastVLMLocalGUI:
 
     def render_hud(self, img: np.ndarray) -> np.ndarray:
         h, w = img.shape[:2]
-        # Top HUD Banner Background
-        cv2.rectangle(img, (0, 0), (w, 60), (15, 20, 28), -1)
-        cv2.line(img, (0, 60), (w, 60), (60, 80, 110), 2)
+        # Top HUD Banner Background (made slightly taller for bigger text)
+        cv2.rectangle(img, (0, 0), (w, 80), (15, 20, 28), -1)
+        cv2.line(img, (0, 80), (w, 80), (60, 80, 110), 2)
 
         # Risk Status Pill
         r_color = (0, 255, 0) if "SAFE" in self.risk_level else ((0, 165, 255) if "WARNING" in self.risk_level else (0, 0, 255))
-        cv2.rectangle(img, (10, 10), (150, 50), r_color, -1)
-        cv2.putText(img, self.risk_level, (18, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+        cv2.rectangle(img, (10, 10), (170, 70), r_color, -1)
+        cv2.putText(img, self.risk_level.split()[0], (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
 
-        # FastVLM Reasoning Output
-        cv2.putText(img, f"FastVLM: {self.reason_text[:65]}", (165, 36),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 245, 255), 1)
+        # FastVLM Reasoning Output (Larger Font)
+        display_text = f"FastVLM: {self.reason_text}"
+        if len(display_text) > 75:
+            display_text = display_text[:72] + "..."
+            
+        cv2.putText(img, display_text, (190, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (240, 245, 255), 2)
 
         # Exact GPU Inference Latency & FPS
         lat_text = f"⚡ {self.latency_ms:.1f}ms ({self.fps:.1f} FPS)"
-        cv2.putText(img, lat_text, (w - 220, 38),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2)
+        cv2.putText(img, lat_text, (w - 280, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
         return img
 
 def main():
