@@ -14,142 +14,43 @@ import torch
 import numpy as np
 from PIL import Image
 
-# FastVLM via ml-fastvlm llava package
-from llava.model.builder import load_pretrained_model
-from llava.mm_utils import tokenizer_image_token, process_images
-from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
+# Moondream2 Edge VLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-MODEL_PATH = "apple/FastVLM-0.5B"
+MODEL_PATH = "vikhyatk/moondream2"
 
 class FastVLMLocalGUI:
     def __init__(self):
-        print("[FastVLM Local GUI] Loading Apple FastVLM-0.5B onto AGX Orin GPU...")
+        print("[Moondream2 Local GUI] Loading vikhyatk/moondream2 onto AGX Orin GPU...")
         t0 = time.time()
 
-        self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
-            MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
+        self.model = AutoModelForCausalLM.from_pretrained(
+            MODEL_PATH, trust_remote_code=True, torch_dtype=torch.float16, device_map="cuda"
         )
-        torch.cuda.synchronize()
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
-        # --- Diagnostics only. No weight mutation until we know which case we're in. ---
-        try:
-            lm_head_w = self.model.get_output_embeddings().weight
-            embed_w = self.model.get_input_embeddings().weight
-            is_tied = torch.equal(lm_head_w, embed_w)
-            cfg_tied = getattr(self.model.config, "tie_word_embeddings", None)
-
-            print(f"[DEBUG FastVLM] tie_word_embeddings config: {cfg_tied}")
-            print(f"[DEBUG FastVLM] lm_head == embed_tokens (tied): {is_tied}")
-            print(f"[DEBUG FastVLM] lm_head stats  - mean: {lm_head_w.mean().item():.5f}, std: {lm_head_w.std().item():.5f}")
-            print(f"[DEBUG FastVLM] embed_tokens stats - mean: {embed_w.mean().item():.5f}, std: {embed_w.std().item():.5f}")
-
-            # Only treat as a bug if config says tied but weights disagree.
-            if cfg_tied is True and not is_tied:
-                print("[DEBUG FastVLM] MISMATCH: config says tied, weights are not. Fixing.")
-                self.model.set_output_embeddings(self.model.get_input_embeddings())
-            elif cfg_tied is False:
-                print("[DEBUG FastVLM] Config says untied — leaving lm_head alone (likely intentional).")
-        except Exception as e:
-            print(f"[DEBUG FastVLM] Weight tie check warning: {e}")
-
-        # --- Check the vision-language projector actually has trained (non-random) weights ---
-        try:
-            get_model_fn = getattr(self.model, "get_model", None)
-            base_model = get_model_fn() if callable(get_model_fn) else self.model
-            projector = getattr(base_model, "mm_projector", None)
-            if projector is not None:
-                for name, p in projector.named_parameters():
-                    print(f"[DEBUG FastVLM] mm_projector.{name} - mean: {p.mean().item():.5f}, std: {p.std().item():.5f}")
-            else:
-                print("[DEBUG FastVLM] WARNING: no mm_projector found on model — image features may never reach the LLM.")
-        except Exception as e:
-            print(f"[DEBUG FastVLM] Projector check warning: {e}")
-
-        # Retrieve native FastViTHD image_processor directly from vision tower
-        if self.image_processor is None and hasattr(self.model, "get_vision_tower"):
-            vision_tower = self.model.get_vision_tower()
-            if not vision_tower.is_loaded:
-                vision_tower.load_model()
-            self.image_processor = getattr(vision_tower, "image_processor", None)
-
-        # Fallback image_mean if missing
-        if self.image_processor is not None and getattr(self.image_processor, 'image_mean', None) is None:
-            self.image_processor.image_mean = [0.485, 0.456, 0.406]
-
-        print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
+        print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE"
         self.latency_ms = 0.0
         self.fps = 0.0
-        self.reason_text = "Initializing FastVLM..."
+        self.reason_text = "Initializing Moondream2..."
 
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
-        from llava.conversation import conv_templates
-        template_name = "qwen_2" if "qwen_2" in conv_templates else ("qwen_1_5" if "qwen_1_5" in conv_templates else "v1")
-        conv = conv_templates[template_name].copy()
-        conv.append_message(conv.roles[0], f"{DEFAULT_IMAGE_TOKEN}\nWhat are you seeing?")
-        conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
-
-        input_ids = tokenizer_image_token(
-            prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
-        ).unsqueeze(0).cuda()
-
-        if self.image_processor is not None:
-            image_tensor = process_images([pil_img], self.image_processor, self.model.config)
-        else:
-            import torchvision.transforms as T
-            _tf = T.Compose([
-                T.Resize((1024, 1024), interpolation=T.InterpolationMode.BICUBIC),
-                T.ToTensor(),
-                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-            image_tensor = _tf(pil_img).unsqueeze(0)
-
-        model_dtype = next(self.model.parameters()).dtype
-        if isinstance(image_tensor, list):
-            image_tensor = [img.to(device="cuda", dtype=model_dtype) for img in image_tensor]
-        else:
-            image_tensor = image_tensor.to(device="cuda", dtype=model_dtype)
-
-        # Explicit multimodal merge — bypass model.generate() entirely
-        attention_mask = torch.ones_like(input_ids, dtype=torch.bool).cuda()
-        with torch.inference_mode():
-            (
-                _input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                inputs_embeds,
-                labels,
-            ) = self.model.prepare_inputs_labels_for_multimodal(
-                input_ids,
-                None,
-                attention_mask,
-                None,
-                None,
-                image_tensor,
-                image_sizes=[pil_img.size],
-            )
-
         t_start = time.time()
-        from transformers.generation.utils import GenerationMixin
         with torch.inference_mode():
-            output_ids = GenerationMixin.generate(
-                self.model,
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                max_new_tokens=64,
-                do_sample=False,
-                use_cache=True,
+            enc_image = self.model.encode_image(pil_img)
+            response_text = self.model.answer_question(
+                enc_image, 
+                "Assess road safety ahead. Reply with SAFE, WARNING, or CRITICAL.", 
+                self.tokenizer
             )
+            
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        # Decode generated tokens
-        response_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
-        print(f"[FastVLM {self.latency_ms:.0f}ms] → {response_text}")
+        print(f"[Moondream2 {self.latency_ms:.0f}ms] → {response_text}")
 
         resp_upper = response_text.upper()
         if "CRITICAL" in resp_upper or "HAZARD" in resp_upper or "STOP" in resp_upper:
@@ -173,8 +74,8 @@ class FastVLMLocalGUI:
         cv2.rectangle(img, (10, 10), (170, 70), r_color, -1)
         cv2.putText(img, self.risk_level.split()[0], (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
 
-        # FastVLM Reasoning Output (Larger Font)
-        display_text = f"FastVLM: {self.reason_text}"
+        # Moondream Reasoning Output (Larger Font)
+        display_text = f"Moondream2: {self.reason_text}"
         if len(display_text) > 75:
             display_text = display_text[:72] + "..."
             
@@ -216,7 +117,7 @@ def main():
             print("[FastVLM GUI] No physical camera found. Using Synthetic HD Road Camera Stream...")
             cap = None
 
-    win_name = "Apple FastVLM-0.5B Real-Time GPU Benchmark (HD 1280x720)"
+    win_name = "Moondream2 Real-Time GPU Benchmark (HD 1280x720)"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, 1280, 720)
 
