@@ -47,7 +47,7 @@ class FastVLMLocalGUI:
             enc_image = self.model.encode_image(pil_img)
             response_text = self.model.answer_question(
                 enc_image, 
-                "Assess road safety ahead. Reply with SAFE, WARNING, or CRITICAL.", 
+                "What do you see?", 
                 self.tokenizer,
                 max_new_tokens=64,
                 repetition_penalty=1.2,
