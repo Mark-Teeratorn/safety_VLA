@@ -30,25 +30,39 @@ class FastVLMLocalGUI:
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
         
-        # Force tie word embeddings for Qwen2 / FastVLM-0.5B
-        if hasattr(self.model, "tie_weights"):
-            self.model.tie_weights()
-
+        # --- Diagnostics only. No weight mutation until we know which case we're in. ---
         try:
             lm_head_w = self.model.get_output_embeddings().weight
             embed_w = self.model.get_input_embeddings().weight
             is_tied = torch.equal(lm_head_w, embed_w)
-            print(f"[DEBUG FastVLM] tie_word_embeddings config: {getattr(self.model.config, 'tie_word_embeddings', None)}")
-            print(f"[DEBUG FastVLM] lm_head == embed_tokens (tied): {is_tied}")
-            print(f"[DEBUG FastVLM] lm_head weight stats - mean: {lm_head_w.mean().item():.5f}, std: {lm_head_w.std().item():.5f}")
-            print(f"[DEBUG FastVLM] embed_tokens weight stats - mean: {embed_w.mean().item():.5f}, std: {embed_w.std().item():.5f}")
+            cfg_tied = getattr(self.model.config, "tie_word_embeddings", None)
 
-            if not is_tied:
-                print("[DEBUG FastVLM] Explicitly tying output embeddings to input embeddings...")
+            print(f"[DEBUG FastVLM] tie_word_embeddings config: {cfg_tied}")
+            print(f"[DEBUG FastVLM] lm_head == embed_tokens (tied): {is_tied}")
+            print(f"[DEBUG FastVLM] lm_head stats  - mean: {lm_head_w.mean().item():.5f}, std: {lm_head_w.std().item():.5f}")
+            print(f"[DEBUG FastVLM] embed_tokens stats - mean: {embed_w.mean().item():.5f}, std: {embed_w.std().item():.5f}")
+
+            # Only treat as a bug if config says tied but weights disagree.
+            if cfg_tied is True and not is_tied:
+                print("[DEBUG FastVLM] MISMATCH: config says tied, weights are not. Fixing.")
                 self.model.set_output_embeddings(self.model.get_input_embeddings())
-                print(f"[DEBUG FastVLM] Re-verify tie: {torch.equal(self.model.get_output_embeddings().weight, embed_w)}")
+            elif cfg_tied is False:
+                print("[DEBUG FastVLM] Config says untied — leaving lm_head alone (likely intentional).")
         except Exception as e:
             print(f"[DEBUG FastVLM] Weight tie check warning: {e}")
+
+        # --- Check the vision-language projector actually has trained (non-random) weights ---
+        try:
+            get_model_fn = getattr(self.model, "get_model", None)
+            base_model = get_model_fn() if callable(get_model_fn) else self.model
+            projector = getattr(base_model, "mm_projector", None)
+            if projector is not None:
+                for name, p in projector.named_parameters():
+                    print(f"[DEBUG FastVLM] mm_projector.{name} - mean: {p.mean().item():.5f}, std: {p.std().item():.5f}")
+            else:
+                print("[DEBUG FastVLM] WARNING: no mm_projector found on model — image features may never reach the LLM.")
+        except Exception as e:
+            print(f"[DEBUG FastVLM] Projector check warning: {e}")
 
         # Retrieve native FastViTHD image_processor directly from vision tower
         if self.image_processor is None and hasattr(self.model, "get_vision_tower"):
