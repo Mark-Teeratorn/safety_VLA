@@ -24,9 +24,11 @@ class FastVLMLocalGUI:
         print("[Moondream2 Local GUI] Loading vikhyatk/moondream2 onto AGX Orin GPU...")
         t0 = time.time()
 
-        # Force float32. JetPack PyTorch builds have known NaN bugs with float16/bfloat16
-        # on certain transformer layers. FP32 guarantees numerical stability on Orin.
-        load_dtype = torch.float8_e4m3fn
+        # To use 8-bit on Jetson Orin (Ampere), you cannot use float8 because the hardware 
+        # doesn't support it and JetPack PyTorch doesn't have the C++ bindings for it.
+        # Instead, we use INT8 Quantization via bitsandbytes.
+        # NOTE: This requires `pip install bitsandbytes` on your Jetson!
+        load_dtype = torch.float16  # Base compute type
         
         # Use the 2024-08-26 revision because it uses standard HuggingFace components,
         # whereas the 2025 revision uses custom CUDA/compile code that breaks on Orin.
@@ -37,8 +39,10 @@ class FastVLMLocalGUI:
             MODEL_PATH, 
             trust_remote_code=True, 
             revision="2024-08-26",
-            torch_dtype=load_dtype
-        ).to(device="cuda")
+            torch_dtype=load_dtype,
+            load_in_8bit=True,      # This triggers true 8-bit compression (INT8)
+            device_map="cuda"       # Required for load_in_8bit
+        )
         
         self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, revision="2024-08-26")
 
