@@ -25,8 +25,8 @@ class FastVLMLocalGUI:
         t0 = time.time()
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH, trust_remote_code=True, torch_dtype=torch.float16, device_map="cuda", revision="2024-08-26"
-        )
+            MODEL_PATH, trust_remote_code=True, revision="2024-08-26"
+        ).to(device="cuda", dtype=torch.float16)
         self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, revision="2024-08-26")
 
         print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
@@ -44,7 +44,10 @@ class FastVLMLocalGUI:
             response_text = self.model.answer_question(
                 enc_image, 
                 "Assess road safety ahead. Reply with SAFE, WARNING, or CRITICAL.", 
-                self.tokenizer
+                self.tokenizer,
+                max_new_tokens=64,
+                repetition_penalty=1.2,
+                do_sample=False
             )
             
         self.latency_ms = (time.time() - t_start) * 1000
