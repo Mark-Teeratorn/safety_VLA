@@ -131,6 +131,46 @@ class FastVLMLocalGUI:
             has_nan = any(torch.isnan(t).any().item() for t in image_tensor) if isinstance(image_tensor, list) else torch.isnan(image_tensor).any().item()
             print(f"[DEBUG FastVLM] Image tensor has NaN: {has_nan}")
 
+        # Single-run multimodal merge isolation diagnostic
+        if not hasattr(self, "_merge_diagnosed"):
+            self._merge_diagnosed = True
+            print(f"[DEBUG FastVLM] Model class: {type(self.model)}")
+            print(f"[DEBUG FastVLM] input_ids shape: {input_ids.shape}, contains IMAGE_TOKEN_INDEX: {(input_ids == IMAGE_TOKEN_INDEX).sum().item()} times")
+
+            if hasattr(self.model, "prepare_inputs_labels_for_multimodal"):
+                try:
+                    with torch.inference_mode():
+                        (
+                            _input_ids,
+                            position_ids,
+                            attention_mask,
+                            past_key_values,
+                            inputs_embeds,
+                            labels,
+                        ) = self.model.prepare_inputs_labels_for_multimodal(
+                            input_ids,
+                            None,   # position_ids
+                            None,   # attention_mask
+                            None,   # past_key_values
+                            None,   # labels
+                            image_tensor,
+                            image_sizes=[pil_img.size],
+                        )
+                    print(f"[DEBUG FastVLM] inputs_embeds shape after merge: {inputs_embeds.shape}")
+                    print(f"[DEBUG FastVLM] inputs_embeds has NaN: {torch.isnan(inputs_embeds).any().item()}")
+                    print(f"[DEBUG FastVLM] inputs_embeds mean/std: {inputs_embeds.mean().item():.5f} / {inputs_embeds.std().item():.5f}")
+
+                    with torch.inference_mode():
+                        out = self.model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
+                    last_logits = out.logits[0, -1]
+                    top5 = torch.topk(last_logits, 5)
+                    print(f"[DEBUG FastVLM] Top-5 next-token ids (raw forward): {top5.indices.tolist()}")
+                    print(f"[DEBUG FastVLM] Top-5 decoded: {[self.tokenizer.decode([t]) for t in top5.indices.tolist()]}")
+                except Exception as e:
+                    print(f"[DEBUG FastVLM] Multimodal merge diagnostic error: {e}")
+            else:
+                print("[DEBUG FastVLM] WARNING: model has no prepare_inputs_labels_for_multimodal — generate() is likely NOT merging images at all.")
+
         t_start = time.time()
         with torch.inference_mode():
             output_ids = self.model.generate(
