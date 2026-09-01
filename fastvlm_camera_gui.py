@@ -24,18 +24,23 @@ class FastVLMLocalGUI:
         print("[Moondream2 Local GUI] Loading vikhyatk/moondream2 onto AGX Orin GPU...")
         t0 = time.time()
 
-        # Force float32. JetPack 5/6 often has hidden bugs with bfloat16 and float16 
-        # on certain PyTorch builds that corrupt the weights and cause gibberish.
-        # Moondream2 is only 1.86B params, so FP32 easily fits in Orin memory (~7.5GB).
+        # Force float32. JetPack PyTorch builds have known NaN bugs with float16/bfloat16
+        # on certain transformer layers. FP32 guarantees numerical stability on Orin.
         load_dtype = torch.float32
         
-        # Use newer 2025 revision because the 2024 one breaks on transformers >= 4.50
+        # Use the 2024-08-26 revision because it uses standard HuggingFace components,
+        # whereas the 2025 revision uses custom CUDA/compile code that breaks on Orin.
+        import warnings
+        warnings.filterwarnings("ignore")
+        
         self.model = AutoModelForCausalLM.from_pretrained(
             MODEL_PATH, 
             trust_remote_code=True, 
-            revision="2025-01-09",
+            revision="2024-08-26",
             torch_dtype=load_dtype
         ).to(device="cuda")
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, revision="2024-08-26")
 
         print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE"
@@ -48,11 +53,15 @@ class FastVLMLocalGUI:
 
         t_start = time.time()
         with torch.inference_mode():
-            response_text = self.model.query(
-                image=pil_img, 
-                question="What do you see?",
-                settings={"max_tokens": 64, "temperature": 0.0}
-            )["answer"]
+            enc_image = self.model.encode_image(pil_img)
+            response_text = self.model.answer_question(
+                enc_image, 
+                "What do you see?", 
+                self.tokenizer,
+                max_new_tokens=64,
+                repetition_penalty=1.2,
+                do_sample=False
+            )
             
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
