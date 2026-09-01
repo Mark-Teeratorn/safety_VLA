@@ -43,21 +43,8 @@ class FastVLMLocalGUI:
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
-        # Build prompt using llava conv_templates
-        try:
-            from llava.conversation import conv_templates
-            conv = conv_templates["qwen_1_5"].copy()
-        except Exception:
-            conv = None
-
-        if conv is not None:
-            conv.append_message(conv.roles[0], f"{DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead: SAFE, WARNING, or CRITICAL.")
-            conv.append_message(conv.roles[1], None)
-            prompt = conv.get_prompt()
-        else:
-            prompt = (f"<|im_start|>system\nYou are an autonomous driving vision system.<|im_end|>\n"
-                      f"<|im_start|>user\n{DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead: SAFE, WARNING, or CRITICAL.<|im_end|>\n"
-                      f"<|im_start|>assistant\n")
+        # Apple FastVLM-0.5B is trained on LLaVA-v1 format (USER: <image>\n... ASSISTANT:)
+        prompt = f"USER: {DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead. Reply with SAFE, WARNING, or CRITICAL.\nASSISTANT:"
 
         input_ids = tokenizer_image_token(
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
