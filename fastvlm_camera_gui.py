@@ -11,44 +11,23 @@ import torch
 import numpy as np
 from PIL import Image
 
-# FastVLM / LLaVA imports
-try:
-    from llava.model.builder import load_pretrained_model
-    from llava.mm_utils import process_images, tokenizer_image_token
-    from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
-    _HAS_FASTVLM = True
-except ImportError:
-    _HAS_FASTVLM = False
+# FastVLM Native HuggingFace imports
+from transformers import AutoProcessor, AutoModelForCausalLM
 
 MODEL_PATH = "apple/FastVLM-0.5B"
 
 class FastVLMLocalGUI:
     def __init__(self):
-        print("[FastVLM Local GUI] Loading Apple FastVLM model onto AGX Orin GPU...")
+        print("[FastVLM Local GUI] Loading Apple FastVLM natively via Hugging Face...")
         t0 = time.time()
-        self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
-            MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
-        )
         
-        if self.image_processor is None or "CLIPImageProcessor" in str(type(self.image_processor)):
-            print("[FastVLM Local GUI] Warning: Using Custom MobileCLIP 1024x1024 Processor for FastVLM")
-            class MobileCLIPProcessor:
-                def __init__(self):
-                    self.image_mean = [0.485, 0.456, 0.406]
-                    self.image_std = [0.229, 0.224, 0.225]
-                    self.size = {"height": 1024, "width": 1024}
-                def preprocess(self, images, return_tensors='pt', **kwargs):
-                    import torchvision.transforms as T
-                    transform = T.Compose([
-                        T.Resize((1024, 1024), interpolation=T.InterpolationMode.BICUBIC),
-                        T.ToTensor(),
-                        T.Normalize(self.image_mean, self.image_std)
-                    ])
-                    if not isinstance(images, list):
-                        images = [images]
-                    tensors = torch.stack([transform(img) for img in images])
-                    return {"pixel_values": tensors}
-            self.image_processor = MobileCLIPProcessor()
+        self.processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            MODEL_PATH, 
+            device_map="cuda", 
+            trust_remote_code=True, 
+            torch_dtype=torch.float16
+        )
             
         print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE ✅"
@@ -59,17 +38,21 @@ class FastVLMLocalGUI:
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
         
-        # FastVLM-0.5B is based on Qwen2. We MUST use ChatML format!
-        prompt = f"<|im_start|>system\nYou are an autonomous driving vision system.<|im_end|>\n<|im_start|>user\n{DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead: SAFE, WARNING, or CRITICAL.<|im_end|>\n<|im_start|>assistant\n"
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image"},
+                {"type": "text", "text": "You are an autonomous driving vision system. Assess road safety ahead: SAFE, WARNING, or CRITICAL."}
+            ]}
+        ]
         
-        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).cuda()
-        image_tensor = process_images([pil_img], self.image_processor, self.model.config)[0].unsqueeze(0).half().cuda()
+        prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = self.processor(text=prompt, images=pil_img, return_tensors="pt")
+        inputs = {k: v.to("cuda") if not torch.is_floating_point(v) else v.to("cuda", torch.float16) for k, v in inputs.items()}
 
         t_start = time.time()
         with torch.inference_mode():
             output_ids = self.model.generate(
-                input_ids,
-                images=image_tensor,
+                **inputs,
                 max_new_tokens=48,
                 do_sample=False
             )
@@ -77,8 +60,8 @@ class FastVLMLocalGUI:
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
         # Decode only the newly generated tokens
-        generated_ids = output_ids[0][input_ids.shape[1]:]
-        response_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        generated_ids = output_ids[0][inputs['input_ids'].shape[1]:]
+        response_text = self.processor.decode(generated_ids, skip_special_tokens=True).strip()
         
         print(f"[FastVLM GPU {self.latency_ms:.1f}ms] Output: {response_text}")
 
@@ -119,10 +102,6 @@ class FastVLMLocalGUI:
         return img
 
 def main():
-    if not _HAS_FASTVLM:
-        print("ERROR: FastVLM package not found. Activate fastvlm_env first.")
-        return
-
     engine = FastVLMLocalGUI()
 
     # Try RealSense First
