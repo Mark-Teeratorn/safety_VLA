@@ -24,9 +24,13 @@ class FastVLMLocalGUI:
         print("[Moondream2 Local GUI] Loading vikhyatk/moondream2 onto AGX Orin GPU...")
         t0 = time.time()
 
+        # Moondream2 activations overflow in float16, causing gibberish text.
+        # Use bfloat16 (Ampere/Orin native) or float32.
+        load_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+        
         self.model = AutoModelForCausalLM.from_pretrained(
             MODEL_PATH, trust_remote_code=True, revision="2024-08-26"
-        ).to(device="cuda", dtype=torch.float16)
+        ).to(device="cuda", dtype=load_dtype)
         self.tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, revision="2024-08-26")
 
         print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
