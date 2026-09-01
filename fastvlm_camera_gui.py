@@ -113,14 +113,32 @@ class FastVLMLocalGUI:
         else:
             image_tensor = image_tensor.to(device="cuda", dtype=model_dtype)
 
+        # Explicit multimodal merge — bypass model.generate() entirely
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool).cuda()
+        with torch.inference_mode():
+            (
+                _input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels,
+            ) = self.model.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                None,
+                attention_mask,
+                None,
+                None,
+                image_tensor,
+                image_sizes=[pil_img.size],
+            )
 
         t_start = time.time()
+        from transformers.generation.utils import GenerationMixin
         with torch.inference_mode():
-            output_ids = self.model.generate(
-                input_ids,
-                images=image_tensor,
-                image_sizes=[pil_img.size],
+            output_ids = GenerationMixin.generate(
+                self.model,
+                inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 max_new_tokens=64,
                 do_sample=False,
@@ -129,10 +147,8 @@ class FastVLMLocalGUI:
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        new_tokens = output_ids[0][input_ids.shape[1]:]
-        response_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-        if not response_text:
-            response_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+        # Decode generated tokens
+        response_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
         print(f"[FastVLM {self.latency_ms:.0f}ms] → {response_text}")
 
         resp_upper = response_text.upper()
