@@ -11,67 +11,86 @@ import torch
 import numpy as np
 from PIL import Image
 
-# FastVLM Native HuggingFace imports
-from transformers import AutoProcessor, AutoModelForCausalLM
+# FastVLM via ml-fastvlm llava package
+from llava.model.builder import load_pretrained_model
+from llava.mm_utils import tokenizer_image_token
+from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
+import torchvision.transforms as T
 
 MODEL_PATH = "apple/FastVLM-0.5B"
 
+# MobileCLIP-L-1024 preprocessing constants (Apple's internal vision tower)
+MOBILECLIP_MEAN = [0.485, 0.456, 0.406]
+MOBILECLIP_STD  = [0.229, 0.224, 0.225]
+MOBILECLIP_SIZE = 1024
+
+_mobileclip_transform = T.Compose([
+    T.Resize((MOBILECLIP_SIZE, MOBILECLIP_SIZE), interpolation=T.InterpolationMode.BICUBIC),
+    T.ToTensor(),
+    T.Normalize(mean=MOBILECLIP_MEAN, std=MOBILECLIP_STD),
+])
+
+def preprocess_image(pil_img: Image.Image) -> torch.Tensor:
+    """Returns (1, 3, 1024, 1024) float16 tensor on CUDA."""
+    return _mobileclip_transform(pil_img).unsqueeze(0).half().cuda()
+
+
 class FastVLMLocalGUI:
     def __init__(self):
-        print("[FastVLM Local GUI] Loading Apple FastVLM natively via Hugging Face...")
+        print("[FastVLM Local GUI] Loading Apple FastVLM-0.5B via ml-fastvlm...")
         t0 = time.time()
-        
-        self.processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH, 
-            device_map="cuda", 
-            trust_remote_code=True, 
-            torch_dtype=torch.float16
+
+        self.tokenizer, self.model, _, _ = load_pretrained_model(
+            MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
-            
-        print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
-        self.risk_level = "SAFE ✅"
+
+        print(f"[FastVLM Local GUI] Model loaded in {time.time() - t0:.2f}s  |  Vision tower: MobileCLIP-L-1024 (manual)")
+        self.risk_level = "SAFE"
         self.latency_ms = 0.0
         self.fps = 0.0
         self.reason_text = "Initializing FastVLM..."
 
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-        
-        messages = [
-            {"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text", "text": "You are an autonomous driving vision system. Assess road safety ahead: SAFE, WARNING, or CRITICAL."}
-            ]}
-        ]
-        
-        prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-        inputs = self.processor(text=prompt, images=pil_img, return_tensors="pt")
-        inputs = {k: v.to("cuda") if not torch.is_floating_point(v) else v.to("cuda", torch.float16) for k, v in inputs.items()}
+
+        # Build prompt in Qwen2/ChatML format
+        sys_msg  = "You are an autonomous driving vision system."
+        usr_msg  = "Assess road safety ahead. Reply with exactly one word: SAFE, WARNING, or CRITICAL."
+        prompt   = (f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
+                    f"<|im_start|>user\n{DEFAULT_IMAGE_TOKEN}\n{usr_msg}<|im_end|>\n"
+                    f"<|im_start|>assistant\n")
+
+        input_ids = tokenizer_image_token(
+            prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
+        ).unsqueeze(0).cuda()
+
+        image_tensor = preprocess_image(pil_img)
 
         t_start = time.time()
         with torch.inference_mode():
             output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=48,
-                do_sample=False
+                input_ids,
+                images=image_tensor,
+                max_new_tokens=16,
+                do_sample=False,
+                temperature=1.0,
+                repetition_penalty=1.3,
             )
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        # Decode only the newly generated tokens
-        generated_ids = output_ids[0][inputs['input_ids'].shape[1]:]
-        response_text = self.processor.decode(generated_ids, skip_special_tokens=True).strip()
-        
-        print(f"[FastVLM GPU {self.latency_ms:.1f}ms] Output: {response_text}")
+        # Decode only newly generated tokens
+        new_tokens = output_ids[0][input_ids.shape[1]:]
+        response_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        print(f"[FastVLM {self.latency_ms:.0f}ms] → {response_text}")
 
         resp_upper = response_text.upper()
         if "CRITICAL" in resp_upper or "HAZARD" in resp_upper or "STOP" in resp_upper:
-            self.risk_level = "CRITICAL 🚨"
+            self.risk_level = "CRITICAL"
         elif "WARNING" in resp_upper or "CAUTION" in resp_upper or "OBSTACLE" in resp_upper:
-            self.risk_level = "WARNING ⚠️"
+            self.risk_level = "WARNING"
         else:
-            self.risk_level = "SAFE ✅"
+            self.risk_level = "SAFE"
 
         self.reason_text = response_text
         return response_text
