@@ -6,6 +6,9 @@ Displays live camera stream, VLA visual safety decision HUD, and exact GPU infer
 
 import time
 import os
+# Suppress Qt font logging warnings
+os.environ["QT_LOGGING_RULES"] = "*=false;qt.qpa.font=false"
+
 import cv2
 import torch
 import numpy as np
@@ -13,38 +16,25 @@ from PIL import Image
 
 # FastVLM via ml-fastvlm llava package
 from llava.model.builder import load_pretrained_model
-from llava.mm_utils import tokenizer_image_token
+from llava.mm_utils import tokenizer_image_token, process_images
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
-import torchvision.transforms as T
 
 MODEL_PATH = "apple/FastVLM-0.5B"
 
-# MobileCLIP-L-1024 preprocessing constants (Apple's internal vision tower)
-MOBILECLIP_MEAN = [0.485, 0.456, 0.406]
-MOBILECLIP_STD  = [0.229, 0.224, 0.225]
-MOBILECLIP_SIZE = 1024
-
-_mobileclip_transform = T.Compose([
-    T.Resize((MOBILECLIP_SIZE, MOBILECLIP_SIZE), interpolation=T.InterpolationMode.BICUBIC),
-    T.ToTensor(),
-    T.Normalize(mean=MOBILECLIP_MEAN, std=MOBILECLIP_STD),
-])
-
-def preprocess_image(pil_img: Image.Image) -> torch.Tensor:
-    """Returns (1, 3, 1024, 1024) float16 tensor on CUDA."""
-    return _mobileclip_transform(pil_img).unsqueeze(0).half().cuda()
-
-
 class FastVLMLocalGUI:
     def __init__(self):
-        print("[FastVLM Local GUI] Loading Apple FastVLM-0.5B via ml-fastvlm...")
+        print("[FastVLM Local GUI] Loading Apple FastVLM-0.5B onto AGX Orin GPU...")
         t0 = time.time()
 
-        self.tokenizer, self.model, _, _ = load_pretrained_model(
+        self.tokenizer, self.model, self.image_processor, _ = load_pretrained_model(
             MODEL_PATH, None, "FastVLM-0.5B", device_map="cuda"
         )
+        
+        # Ensure image_mean exists on processor if needed by process_images
+        if self.image_processor is not None and getattr(self.image_processor, 'image_mean', None) is None:
+            self.image_processor.image_mean = [0.485, 0.456, 0.406]
 
-        print(f"[FastVLM Local GUI] Model loaded in {time.time() - t0:.2f}s  |  Vision tower: MobileCLIP-L-1024 (manual)")
+        print(f"[FastVLM Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE"
         self.latency_ms = 0.0
         self.fps = 0.0
@@ -73,13 +63,27 @@ class FastVLMLocalGUI:
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
         ).unsqueeze(0).cuda()
 
-        image_tensor = preprocess_image(pil_img)
+        if self.image_processor is not None:
+            image_tensor = process_images([pil_img], self.image_processor, self.model.config)
+            if isinstance(image_tensor, list):
+                image_tensor = [img.half().cuda() for img in image_tensor]
+            else:
+                image_tensor = image_tensor.half().cuda()
+        else:
+            import torchvision.transforms as T
+            _tf = T.Compose([
+                T.Resize((1024, 1024), interpolation=T.InterpolationMode.BICUBIC),
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+            image_tensor = _tf(pil_img).unsqueeze(0).half().cuda()
 
         t_start = time.time()
         with torch.inference_mode():
             output_ids = self.model.generate(
                 input_ids,
                 images=image_tensor,
+                image_sizes=[pil_img.size],
                 max_new_tokens=64,
                 do_sample=False,
             )
