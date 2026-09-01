@@ -30,8 +30,11 @@ class FastVLMLocalGUI:
         
         # Use newer 2025 revision because the 2024 one breaks on transformers >= 4.50
         self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH, trust_remote_code=True, revision="2025-01-09"
-        ).to(device="cuda", dtype=load_dtype)
+            MODEL_PATH, 
+            trust_remote_code=True, 
+            revision="2025-01-09",
+            torch_dtype=load_dtype
+        ).to(device="cuda")
 
         print(f"[Moondream2 Local GUI] Model loaded successfully in {time.time() - t0:.2f}s!")
         self.risk_level = "SAFE"
