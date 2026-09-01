@@ -53,12 +53,21 @@ class FastVLMLocalGUI:
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
-        # Build prompt in Qwen2/ChatML format
-        sys_msg  = "You are an autonomous driving vision system."
-        usr_msg  = "Assess road safety ahead. Reply with exactly one word: SAFE, WARNING, or CRITICAL."
-        prompt   = (f"<|im_start|>system\n{sys_msg}<|im_end|>\n"
-                    f"<|im_start|>user\n{DEFAULT_IMAGE_TOKEN}\n{usr_msg}<|im_end|>\n"
-                    f"<|im_start|>assistant\n")
+        # Build prompt using llava conv_templates
+        try:
+            from llava.conversation import conv_templates
+            conv = conv_templates["qwen_1_5"].copy()
+        except Exception:
+            conv = None
+
+        if conv is not None:
+            conv.append_message(conv.roles[0], f"{DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead: SAFE, WARNING, or CRITICAL.")
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
+        else:
+            prompt = (f"<|im_start|>system\nYou are an autonomous driving vision system.<|im_end|>\n"
+                      f"<|im_start|>user\n{DEFAULT_IMAGE_TOKEN}\nAssess road safety ahead: SAFE, WARNING, or CRITICAL.<|im_end|>\n"
+                      f"<|im_start|>assistant\n")
 
         input_ids = tokenizer_image_token(
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
@@ -71,26 +80,33 @@ class FastVLMLocalGUI:
             output_ids = self.model.generate(
                 input_ids,
                 images=image_tensor,
-                max_new_tokens=16,
+                max_new_tokens=64,
                 do_sample=False,
-                temperature=1.0,
-                repetition_penalty=1.3,
             )
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        # Decode only newly generated tokens
-        new_tokens = output_ids[0][input_ids.shape[1]:]
-        response_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        # Robust decoding
+        full_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+        
+        if "<|im_start|>assistant" in full_text:
+            response_text = full_text.split("<|im_start|>assistant")[-1].strip()
+        elif "ASSISTANT:" in full_text:
+            response_text = full_text.split("ASSISTANT:")[-1].strip()
+        else:
+            response_text = self.tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True).strip()
+            if not response_text:
+                response_text = full_text
+
         print(f"[FastVLM {self.latency_ms:.0f}ms] → {response_text}")
 
         resp_upper = response_text.upper()
         if "CRITICAL" in resp_upper or "HAZARD" in resp_upper or "STOP" in resp_upper:
-            self.risk_level = "CRITICAL"
+            self.risk_level = "CRITICAL 🚨"
         elif "WARNING" in resp_upper or "CAUTION" in resp_upper or "OBSTACLE" in resp_upper:
-            self.risk_level = "WARNING"
+            self.risk_level = "WARNING ⚠️"
         else:
-            self.risk_level = "SAFE"
+            self.risk_level = "SAFE ✅"
 
         self.reason_text = response_text
         return response_text
