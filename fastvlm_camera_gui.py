@@ -50,19 +50,27 @@ class FastVLMLocalGUI:
     def infer(self, frame_bgr: np.ndarray) -> str:
         pil_img = Image.fromarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
 
-        # Apple FastVLM-0.5B is trained on LLaVA-v1 format (USER: <image>\n... ASSISTANT:)
-        prompt = f"USER: {DEFAULT_IMAGE_TOKEN}\nWhat are you seeing?\nASSISTANT:"
+        # 1. Conversation Template (Qwen2 / ChatML for FastVLM)
+        from llava.conversation import conv_templates
+        if "qwen_2" in conv_templates:
+            template_name = "qwen_2"
+        elif "qwen_1_5" in conv_templates:
+            template_name = "qwen_1_5"
+        else:
+            template_name = "v1"
+
+        conv = conv_templates[template_name].copy()
+        conv.append_message(conv.roles[0], f"{DEFAULT_IMAGE_TOKEN}\nWhat are you seeing?")
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
 
         input_ids = tokenizer_image_token(
             prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
         ).unsqueeze(0).cuda()
 
+        # 2. Image Preprocessing
         if self.image_processor is not None:
             image_tensor = process_images([pil_img], self.image_processor, self.model.config)
-            if isinstance(image_tensor, list):
-                image_tensor = [img.half().cuda() for img in image_tensor]
-            else:
-                image_tensor = image_tensor.half().cuda()
         else:
             import torchvision.transforms as T
             _tf = T.Compose([
@@ -70,7 +78,24 @@ class FastVLMLocalGUI:
                 T.ToTensor(),
                 T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ])
-            image_tensor = _tf(pil_img).unsqueeze(0).half().cuda()
+            image_tensor = _tf(pil_img).unsqueeze(0)
+
+        # 3. Match Dtype to Model Parameters
+        model_dtype = next(self.model.parameters()).dtype
+        if isinstance(image_tensor, list):
+            image_tensor = [img.to(device="cuda", dtype=model_dtype) for img in image_tensor]
+        else:
+            image_tensor = image_tensor.to(device="cuda", dtype=model_dtype)
+
+        # Debug check once
+        if not hasattr(self, "_dtype_checked"):
+            self._dtype_checked = True
+            print(f"[DEBUG FastVLM] Conv template: {template_name}")
+            print(f"[DEBUG FastVLM] Model dtype: {model_dtype}")
+            img_dt = image_tensor[0].dtype if isinstance(image_tensor, list) else image_tensor.dtype
+            print(f"[DEBUG FastVLM] Image tensor dtype: {img_dt}")
+            has_nan = any(torch.isnan(t).any().item() for t in image_tensor) if isinstance(image_tensor, list) else torch.isnan(image_tensor).any().item()
+            print(f"[DEBUG FastVLM] Image tensor has NaN: {has_nan}")
 
         t_start = time.time()
         with torch.inference_mode():
@@ -84,17 +109,17 @@ class FastVLMLocalGUI:
         self.latency_ms = (time.time() - t_start) * 1000
         self.fps = 1000.0 / max(self.latency_ms, 1.0)
 
-        # Robust decoding
-        full_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
-        
-        if "<|im_start|>assistant" in full_text:
-            response_text = full_text.split("<|im_start|>assistant")[-1].strip()
-        elif "ASSISTANT:" in full_text:
-            response_text = full_text.split("ASSISTANT:")[-1].strip()
-        else:
-            response_text = self.tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True).strip()
-            if not response_text:
-                response_text = full_text
+        # Raw Token Debugging
+        raw_decode = self.tokenizer.decode(output_ids[0], skip_special_tokens=False)
+        if not hasattr(self, "_raw_printed"):
+            self._raw_printed = True
+            print(f"[DEBUG FastVLM] Raw output sequence: {repr(raw_decode)}")
+
+        new_tokens = output_ids[0][input_ids.shape[1]:]
+        response_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+        if not response_text:
+            response_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
 
         print(f"[FastVLM {self.latency_ms:.0f}ms] → {response_text}")
 
