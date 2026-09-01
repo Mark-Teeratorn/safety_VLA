@@ -31,14 +31,13 @@ class FastVLMLocalGUI:
         )
         
         if self.image_processor is None:
-            from transformers import AutoImageProcessor
+            from transformers import CLIPImageProcessor
             try:
-                self.image_processor = AutoImageProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+                vt = getattr(self.model.config, 'mm_vision_tower', "openai/clip-vit-large-patch14-336")
+                self.image_processor = CLIPImageProcessor.from_pretrained(vt)
             except Exception as e:
-                print(f"[FastVLM Local GUI] Warning: Could not load image processor: {e}")
-                class DummyProcessor:
-                    pass
-                self.image_processor = DummyProcessor()
+                print(f"[FastVLM Local GUI] Warning: Could not load vision tower processor, defaulting to CLIP: {e}")
+                self.image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
         
         if getattr(self.image_processor, 'image_mean', None) is None:
             self.image_processor.image_mean = [0.48145466, 0.4578275, 0.40821073]
