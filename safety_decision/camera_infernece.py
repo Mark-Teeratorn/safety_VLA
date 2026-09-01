@@ -610,20 +610,31 @@ def main():
     pipeline = VLACosmosRealtimePipeline(args.model, conf_thresh=args.conf, use_yolo=not args.no_yolo, vlm_model=args.vlm_model)
     pipeline.start_zenoh()
 
-    if args.camera == "realsense":
-        if not _HAS_REALSENSE:
-            print("[VLA Cosmos] ERROR: pyrealsense2 is not installed.")
-            return
-        print("[VLA Cosmos] Starting RealSense Camera Pipeline (1280x720 HD)...")
-        rs_pipeline = rs.pipeline()
-        cfg = rs.config()
-        cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
-        rs_pipeline.start(cfg)
-    else:
-        print("[VLA Cosmos] Starting USB Camera (1280x720 HD)...")
+    # Initialize Camera Capture
+    use_rs = False
+    cap = None
+
+    if args.camera == "realsense" and _HAS_REALSENSE:
+        try:
+            print("[VLA Cosmos] Starting RealSense Camera Pipeline (1280x720 HD)...")
+            rs_pipeline = rs.pipeline()
+            cfg = rs.config()
+            cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
+            rs_pipeline.start(cfg)
+            use_rs = True
+        except Exception as e:
+            print(f"[VLA Cosmos] RealSense not detected ({e}). Trying USB Camera...")
+            use_rs = False
+
+    if not use_rs:
         cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        if cap.isOpened():
+            print("[VLA Cosmos] Starting USB Camera /dev/video0 (1280x720 HD)...")
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        else:
+            print("[VLA Cosmos] NOTICE: No physical camera found. Initializing Synthetic HD Road Camera Stream...")
+            cap = None
 
     print("[VLA Cosmos] Real-Time Safety Engine active. Running inference & safety reasoning...")
     win_name = "VLA Cosmos Real-Time Safety Engine (HD 1280x720)"
@@ -631,18 +642,34 @@ def main():
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(win_name, 1280, 720)
 
+    frame_count = 0
     try:
         while True:
-            if args.camera == "realsense":
+            frame_count += 1
+            if use_rs:
                 frames = rs_pipeline.wait_for_frames()
                 color_frame = frames.get_color_frame()
                 if not color_frame:
                     continue
                 frame_bgr = np.asanyarray(color_frame.get_data())
-            else:
+            elif cap and cap.isOpened():
                 ret, frame_bgr = cap.read()
                 if not ret:
                     continue
+            else:
+                # Generate realistic synthetic HD road scene (1280x720)
+                frame_bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+                # Draw Road & Sky
+                frame_bgr[:360, :] = [180, 140, 100]  # Sky / horizon
+                frame_bgr[360:, :] = [60, 60, 65]    # Asphalt Road
+                # Road lanes
+                cv2.line(frame_bgr, (640, 360), (200, 720), (255, 255, 255), 4)
+                cv2.line(frame_bgr, (640, 360), (1080, 720), (255, 255, 255), 4)
+                # Simulated road obstacle (box/obstacle)
+                if (frame_count // 30) % 2 == 1:
+                    cv2.rectangle(frame_bgr, (580, 480), (700, 580), (30, 30, 200), -1)
+                    cv2.putText(frame_bgr, "ROAD OBSTACLE", (560, 470), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                time.sleep(0.03)
 
             frame_hud = pipeline.process_and_draw(frame_bgr)
 
@@ -653,9 +680,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if args.camera == "realsense":
+        if use_rs:
             rs_pipeline.stop()
-        else:
+        elif cap:
             cap.release()
         cv2.destroyAllWindows()
 
